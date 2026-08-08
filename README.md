@@ -67,6 +67,8 @@ This keeps the driver persistent across Venus OS firmware updates.
 
 During installation, a legacy `dbus-mqtt-pv` service from the original project is stopped and removed if it exists. After migrating from the old driver, remove stale disconnected entries once in the Venus OS device list.
 
+The installer also stops an existing `dbus-mqtt-opendtu` service before replacing files. This prevents multiple daemon-tools supervisors from running after repeated updates.
+
 ## Configuration
 
 Copy or edit:

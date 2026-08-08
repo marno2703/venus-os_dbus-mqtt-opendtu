@@ -7,8 +7,26 @@ INSTALL_DIR="/data/etc/$SERVICE_NAME"
 RC_LOCAL="/data/rc.local"
 OLD_SERVICE_NAME="dbus-mqtt-pv"
 
+stop_service() {
+    name="$1"
+
+    if [ -e "/service/$name" ]; then
+        svc -d "/service/$name" 2>/dev/null || true
+        svc -d "/service/$name/log" 2>/dev/null || true
+        rm -f "/service/$name"
+        sleep 2
+    fi
+
+    pkill -f "python .*/$name.py" 2>/dev/null || true
+    pkill -f "supervise $name" 2>/dev/null || true
+    pkill -f "multilog .*$name" 2>/dev/null || true
+}
+
 echo
 echo "Installing $SERVICE_NAME to $INSTALL_DIR..."
+
+echo "Stopping existing $SERVICE_NAME service if present..."
+stop_service "$SERVICE_NAME"
 
 if [ "$SCRIPT_DIR" != "$INSTALL_DIR" ]; then
     mkdir -p "$INSTALL_DIR"
@@ -20,6 +38,8 @@ if [ ! -f "$SCRIPT_DIR/config.ini" ] && [ -f "$SCRIPT_DIR/config.sample.ini" ]; 
     cp "$SCRIPT_DIR/config.sample.ini" "$SCRIPT_DIR/config.ini"
 fi
 
+rm -rf "$SCRIPT_DIR/service/supervise" "$SCRIPT_DIR/service/log/supervise"
+
 echo "Setting permissions..."
 chmod 755 "$SCRIPT_DIR"/*.py
 chmod 755 "$SCRIPT_DIR"/*.sh
@@ -28,13 +48,7 @@ chmod 755 "$SCRIPT_DIR/service/log/run"
 
 if [ "$SERVICE_NAME" != "$OLD_SERVICE_NAME" ]; then
     echo "Removing legacy $OLD_SERVICE_NAME service if present..."
-    if [ -e "/service/$OLD_SERVICE_NAME" ]; then
-        svc -d "/service/$OLD_SERVICE_NAME" 2>/dev/null || true
-        rm -f "/service/$OLD_SERVICE_NAME"
-    fi
-    pkill -f "python .*/$OLD_SERVICE_NAME.py" 2>/dev/null || true
-    pkill -f "supervise .*$OLD_SERVICE_NAME" 2>/dev/null || true
-    pkill -f "multilog .*$OLD_SERVICE_NAME" 2>/dev/null || true
+    stop_service "$OLD_SERVICE_NAME"
 fi
 
 if [ ! -L "/service/$SERVICE_NAME" ]; then
@@ -58,7 +72,6 @@ grep -qxF "bash $INSTALL_DIR/install.sh" "$RC_LOCAL" || echo "bash $INSTALL_DIR/
 
 if command -v svc >/dev/null 2>&1; then
     svc -u "/service/$SERVICE_NAME" 2>/dev/null || true
-    svc -t "/service/$SERVICE_NAME" 2>/dev/null || true
 fi
 
 echo "done."

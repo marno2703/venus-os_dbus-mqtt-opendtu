@@ -13,5 +13,6 @@
 - Changed startup behavior so retained `name` topics alone do not create disconnected placeholder devices.
 - Changed D-Bus device instance allocation to skip already used Venus OS instances and persist serial-to-instance mappings.
 - Changed installation to stop and remove the legacy `dbus-mqtt-pv` service during migration.
+- Changed updates to stop the existing `dbus-mqtt-opendtu` service before replacing files.
 - Removed manual instances, generic MQTT payload handling, fixed topic configuration, and non-OpenDTU device support.
 - Changed installation to the persistent `/data/etc/dbus-mqtt-opendtu` path.

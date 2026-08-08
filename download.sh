@@ -6,6 +6,19 @@ driver_name="dbus-mqtt-opendtu"
 repo_name="venus-os_dbus-mqtt-opendtu"
 branch="master"
 
+stop_driver_service() {
+    if [ -e "/service/$driver_name" ]; then
+        svc -d "/service/$driver_name" 2>/dev/null || true
+        svc -d "/service/$driver_name/log" 2>/dev/null || true
+        rm -f "/service/$driver_name"
+        sleep 2
+    fi
+
+    pkill -f "python .*/$driver_name.py" 2>/dev/null || true
+    pkill -f "supervise $driver_name" 2>/dev/null || true
+    pkill -f "multilog .*dbus-mqtt-opendtu" 2>/dev/null || true
+}
+
 echo
 echo "Downloading $driver_name..."
 
@@ -19,6 +32,9 @@ if [ -f "$driver_path/$driver_name/config.ini" ]; then
     echo "Backing up existing config.ini..."
     cp "$driver_path/$driver_name/config.ini" "/tmp/${driver_name}_config.ini"
 fi
+
+echo "Stopping existing $driver_name service..."
+stop_driver_service
 
 rm -rf "$driver_path/$driver_name"
 mkdir -p "$driver_path"
