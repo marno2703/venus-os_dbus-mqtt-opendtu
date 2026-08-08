@@ -26,7 +26,7 @@ FIRMWARE_VERSION = "0.2.0-opendtu"
 DEFAULT_BASE_TOPIC = "solar"
 DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
-DEFAULT_MAX_POWER = 1500
+DEFAULT_MAX_POWER = 100000
 FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
 MAX_RECORDED_TOPICS = 50
@@ -288,13 +288,12 @@ class OpenDtuInverterService:
         self._dbusservice.add_path("/Ac/Current", None, gettextcallback=text_a)
         self._dbusservice.add_path("/Ac/Voltage", None, gettextcallback=text_v)
         self._dbusservice.add_path("/Ac/Energy/Forward", None, gettextcallback=text_kwh)
-        self._dbusservice.add_path("/Ac/MaxPower", DEFAULT_MAX_POWER, gettextcallback=text_w)
         self._dbusservice.add_path(
-            "/Ac/PowerLimit",
+            "/Ac/MaxPower",
             DEFAULT_MAX_POWER,
             gettextcallback=text_w,
             writeable=True,
-            onchangecallback=self._handle_power_limit_changed,
+            onchangecallback=self._handle_max_power_changed,
         )
         self._dbusservice.add_path("/Ac/Position", DEFAULT_POSITION, gettextcallback=text_n)
         self._dbusservice.add_path("/Ac/StatusCode", 8, gettextcallback=text_n)
@@ -335,10 +334,6 @@ class OpenDtuInverterService:
         elif metric == "yieldtotal":
             self._dbusservice["/Ac/Energy/Forward"] = round(value, 3)
             self._dbusservice["/Ac/L1/Energy/Forward"] = round(value, 3)
-        elif metric == "limit_absolute":
-            limit = max(0, int(round(value)))
-            self._dbusservice["/Ac/MaxPower"] = limit
-            self._dbusservice["/Ac/PowerLimit"] = limit
 
         index = self._dbusservice["/UpdateIndex"] + 1
         self._dbusservice["/UpdateIndex"] = 0 if index > 255 else index
@@ -361,7 +356,7 @@ class OpenDtuInverterService:
         except Exception:
             pass
 
-    def _handle_power_limit_changed(self, path, value):
+    def _handle_max_power_changed(self, path, value):
         logging.info("Received D-Bus limit write for inverter %s: %s=%s", self.serial, path, value)
         try:
             limit = max(0, int(float(value)))
@@ -531,9 +526,6 @@ def parse_opendtu_topic(topic):
     if len(remaining) == 3 and remaining[1] == "0":
         return serial, remaining[2]
 
-    if len(remaining) == 3 and remaining[1] == "status" and remaining[2] == "limit_absolute":
-        return serial, "limit_absolute"
-
     return None
 
 
@@ -562,7 +554,7 @@ def on_message(client, userdata, msg):
         serial, metric = parsed_topic
         if metric == "name":
             GLib.idle_add(manager.handle_name_message, serial, parse_text_payload(msg.payload))
-        elif metric in ("power", "current", "voltage", "frequency", "powerfactor", "yieldtotal", "limit_absolute"):
+        elif metric in ("power", "current", "voltage", "frequency", "powerfactor", "yieldtotal"):
             GLib.idle_add(manager.handle_metric_message, serial, metric, parse_float_payload(msg.payload))
     except Exception:
         exception_type, exception_object, exception_traceback = sys.exc_info()
