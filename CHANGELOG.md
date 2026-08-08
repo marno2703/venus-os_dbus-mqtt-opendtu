@@ -9,7 +9,9 @@
 - Added direct ESS limit feedback to `<base_topic>/<serial>/cmd/limit_nonpersistent_absolute`.
 - Added filtering so only long numeric inverter serial numbers are accepted.
 - Added OpenDTU `name` forwarding to the Venus OS D-Bus `/CustomName`.
+- Added discovery logs for inverter serial numbers and assigned DeviceInstance values.
 - Changed startup behavior so retained `name` topics alone do not create disconnected placeholder devices.
 - Changed D-Bus device instance allocation to skip already used Venus OS instances and persist serial-to-instance mappings.
+- Changed installation to stop and remove the legacy `dbus-mqtt-pv` service during migration.
 - Removed manual instances, generic MQTT payload handling, fixed topic configuration, and non-OpenDTU device support.
 - Changed installation to the persistent `/data/etc/dbus-mqtt-opendtu` path.

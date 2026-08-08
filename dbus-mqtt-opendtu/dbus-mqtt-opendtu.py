@@ -62,7 +62,7 @@ def load_config():
 
 
 def setup_logging():
-    logging.basicConfig(level=logging.WARNING)
+    logging.basicConfig(level=logging.INFO)
 
 
 def base_topic():
@@ -269,7 +269,7 @@ class OpenDtuInverterService:
         self._dbusservice.add_path("/Ac/L1/Energy/Forward", None, gettextcallback=text_kwh)
 
         self._dbusservice.register()
-        logging.info("Created D-Bus service for OpenDTU inverter %s", serial)
+        logging.info("Created D-Bus service for OpenDTU inverter %s with DeviceInstance %s", serial, deviceinstance)
 
     def update_metric(self, metric, value):
         self.last_seen = int(time())
@@ -307,6 +307,7 @@ class OpenDtuInverterService:
         self.name = name
         self._dbusservice["/CustomName"] = name
         self._dbusservice["/Mgmt/Connection"] = "OpenDTU MQTT %s (%s)" % (self.serial, name)
+        logging.info("Updated OpenDTU inverter %s name to %s", self.serial, name)
 
     def close(self):
         logging.info("Removing D-Bus service for inactive OpenDTU inverter %s", self.serial)
@@ -343,6 +344,7 @@ class OpenDtuManager:
             self.inverters[serial] = service
             if serial in self.names:
                 service.update_name(self.names[serial])
+            logging.info("Discovered OpenDTU inverter %s from metric %s", serial, metric)
 
         service.update_metric(metric, value)
         return False

@@ -65,6 +65,8 @@ and adds it to:
 
 This keeps the driver persistent across Venus OS firmware updates.
 
+During installation, a legacy `dbus-mqtt-pv` service from the original project is stopped and removed if it exists. After migrating from the old driver, remove stale disconnected entries once in the Venus OS device list.
+
 ## Configuration
 
 Copy or edit:
@@ -132,6 +134,12 @@ Show the live log:
 
 ```sh
 tail -n 100 -F /var/log/dbus-mqtt-opendtu/current | tai64nlocal
+```
+
+For every detected inverter, the log should contain a line like:
+
+```text
+Created D-Bus service for OpenDTU inverter <serial> with DeviceInstance 100
 ```
 
 ## How The Limit Feedback Works
