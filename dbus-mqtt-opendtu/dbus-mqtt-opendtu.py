@@ -22,10 +22,11 @@ from ve_utils import get_vrm_portal_id  # noqa: E402
 
 
 FIRMWARE_VERSION = "0.2.0-opendtu"
-DEFAULT_BASE_TOPIC = "opendtu"
+DEFAULT_BASE_TOPIC = "solar"
 DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
 DEFAULT_MAX_POWER = 100000
+INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
 
 config = None
 manager = None
@@ -66,8 +67,12 @@ def base_topic():
     return config["MQTT"].get("base_topic", DEFAULT_BASE_TOPIC).strip("/")
 
 
-def status_power_topic():
-    return "%s/+/status/power" % base_topic()
+def inverter_metric_topic():
+    return "%s/+/0/+" % base_topic()
+
+
+def inverter_name_topic():
+    return "%s/+/name" % base_topic()
 
 
 def command_topic(serial):
@@ -96,31 +101,54 @@ def text_v(path, value):
     return "" if value is None else "%.2fV" % value
 
 
+def text_hz(path, value):
+    return "" if value is None else "%.2fHz" % value
+
+
+def text_pf(path, value):
+    return "" if value is None else "%.3f" % value
+
+
 def text_n(path, value):
     return "" if value is None else "%i" % value
 
 
-def parse_power_payload(payload):
+def parse_payload(payload):
     if payload in ("", b""):
         raise ValueError("empty payload")
 
     decoded = payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
-    parsed = json.loads(decoded)
+    try:
+        return json.loads(decoded)
+    except ValueError:
+        return decoded
+
+
+def parse_float_payload(payload):
+    parsed = parse_payload(payload)
 
     if isinstance(parsed, dict):
         if "value" in parsed:
             return float(parsed["value"])
-        if "power" in parsed:
-            return float(parsed["power"])
-        raise ValueError("payload object does not contain value or power")
+        raise ValueError("payload object does not contain value")
 
     return float(parsed)
+
+
+def parse_text_payload(payload):
+    parsed = parse_payload(payload)
+    if isinstance(parsed, dict):
+        if "value" in parsed:
+            return str(parsed["value"])
+        raise ValueError("payload object does not contain value")
+    return str(parsed)
 
 
 class OpenDtuInverterService:
     def __init__(self, serial, deviceinstance):
         self.serial = serial
         self.last_seen = int(time())
+        self.name = None
         self.power = 0.0
         self._dbusservice = VeDbusService(
             "com.victronenergy.pvinverter.mqtt_%s" % sanitize_service_suffix(serial),
@@ -164,25 +192,49 @@ class OpenDtuInverterService:
         self._dbusservice.add_path("/Ac/L1/Power", 0, gettextcallback=text_w)
         self._dbusservice.add_path("/Ac/L1/Current", None, gettextcallback=text_a)
         self._dbusservice.add_path("/Ac/L1/Voltage", None, gettextcallback=text_v)
+        self._dbusservice.add_path("/Ac/L1/Frequency", None, gettextcallback=text_hz)
+        self._dbusservice.add_path("/Ac/L1/PowerFactor", None, gettextcallback=text_pf)
         self._dbusservice.add_path("/Ac/L1/Energy/Forward", None, gettextcallback=text_kwh)
 
         self._dbusservice.register()
         logging.info("Created D-Bus service for OpenDTU inverter %s", serial)
 
-    def update_power(self, power):
+    def update_metric(self, metric, value):
         self.last_seen = int(time())
-        self.power = round(power, 2)
-
         self._dbusservice["/Connected"] = 1
-        self._dbusservice["/Ac/Power"] = self.power
-        self._dbusservice["/Ac/L1/Power"] = self.power
 
-        status = 7 if self.power >= 10 else 8
-        self._dbusservice["/StatusCode"] = status
-        self._dbusservice["/Ac/StatusCode"] = status
+        if metric == "power":
+            self.power = round(value, 2)
+            self._dbusservice["/Ac/Power"] = self.power
+            self._dbusservice["/Ac/L1/Power"] = self.power
+
+            status = 7 if self.power >= 10 else 8
+            self._dbusservice["/StatusCode"] = status
+            self._dbusservice["/Ac/StatusCode"] = status
+        elif metric == "current":
+            self._dbusservice["/Ac/Current"] = round(value, 2)
+            self._dbusservice["/Ac/L1/Current"] = round(value, 2)
+        elif metric == "voltage":
+            self._dbusservice["/Ac/Voltage"] = round(value, 2)
+            self._dbusservice["/Ac/L1/Voltage"] = round(value, 2)
+        elif metric == "frequency":
+            self._dbusservice["/Ac/L1/Frequency"] = round(value, 2)
+        elif metric == "powerfactor":
+            self._dbusservice["/Ac/L1/PowerFactor"] = round(value, 3)
+        elif metric == "yieldtotal":
+            self._dbusservice["/Ac/Energy/Forward"] = round(value, 3)
+            self._dbusservice["/Ac/L1/Energy/Forward"] = round(value, 3)
 
         index = self._dbusservice["/UpdateIndex"] + 1
         self._dbusservice["/UpdateIndex"] = 0 if index > 255 else index
+
+    def update_name(self, name):
+        if not name or name == self.name:
+            return
+
+        self.name = name
+        self._dbusservice["/CustomName"] = name
+        self._dbusservice["/Mgmt/Connection"] = "OpenDTU MQTT %s (%s)" % (self.serial, name)
 
     def close(self):
         logging.info("Removing D-Bus service for inactive OpenDTU inverter %s", self.serial)
@@ -210,13 +262,22 @@ class OpenDtuManager:
         self.inverters = {}
         self.device_instances = {}
 
-    def handle_power_message(self, serial, power):
+    def handle_metric_message(self, serial, metric, value):
         service = self.inverters.get(serial)
         if service is None:
             service = OpenDtuInverterService(serial, self._device_instance_for(serial))
             self.inverters[serial] = service
 
-        service.update_power(power)
+        service.update_metric(metric, value)
+        return False
+
+    def handle_name_message(self, serial, name):
+        service = self.inverters.get(serial)
+        if service is None:
+            service = OpenDtuInverterService(serial, self._device_instance_for(serial))
+            self.inverters[serial] = service
+
+        service.update_name(name)
         return False
 
     def cleanup_inactive(self):
@@ -250,14 +311,27 @@ class OpenDtuManager:
         return candidate
 
 
-def extract_serial(topic):
-    prefix = base_topic() + "/"
-    suffix = "/status/power"
-    if not topic.startswith(prefix) or not topic.endswith(suffix):
+def parse_opendtu_topic(topic):
+    parts = topic.split("/")
+    base_parts = base_topic().split("/")
+    if parts[: len(base_parts)] != base_parts:
         return None
 
-    serial = topic[len(prefix) : -len(suffix)]
-    return serial if serial and "/" not in serial else None
+    remaining = parts[len(base_parts) :]
+    if len(remaining) < 2:
+        return None
+
+    serial = remaining[0]
+    if not INVERTER_SERIAL_RE.match(serial):
+        return None
+
+    if len(remaining) == 2 and remaining[1] == "name":
+        return serial, "name"
+
+    if len(remaining) == 3 and remaining[1] == "0":
+        return serial, remaining[2]
+
+    return None
 
 
 def on_disconnect(client, userdata, flags, reason_code, properties):
@@ -266,22 +340,25 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
 
 def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code == 0:
-        topic = status_power_topic()
-        logging.info("MQTT client: connected, subscribing to %s", topic)
-        client.subscribe(topic)
+        topics = [(inverter_metric_topic(), 0), (inverter_name_topic(), 0)]
+        logging.info("MQTT client: connected, subscribing to %s and %s", topics[0][0], topics[1][0])
+        client.subscribe(topics)
     else:
         logging.error("MQTT client: failed to connect, return code %s", reason_code)
 
 
 def on_message(client, userdata, msg):
     try:
-        serial = extract_serial(msg.topic)
-        if serial is None:
-            logging.debug("Ignoring MQTT topic outside OpenDTU power subscription: %s", msg.topic)
+        parsed_topic = parse_opendtu_topic(msg.topic)
+        if parsed_topic is None:
+            logging.debug("Ignoring MQTT topic outside OpenDTU inverter data: %s", msg.topic)
             return
 
-        power = parse_power_payload(msg.payload)
-        GLib.idle_add(manager.handle_power_message, serial, power)
+        serial, metric = parsed_topic
+        if metric == "name":
+            GLib.idle_add(manager.handle_name_message, serial, parse_text_payload(msg.payload))
+        elif metric in ("power", "current", "voltage", "frequency", "powerfactor", "yieldtotal"):
+            GLib.idle_add(manager.handle_metric_message, serial, metric, parse_float_payload(msg.payload))
     except Exception:
         exception_type, exception_object, exception_traceback = sys.exc_info()
         file = exception_traceback.tb_frame.f_code.co_filename

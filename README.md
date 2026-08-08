@@ -8,23 +8,28 @@ Original project license and copyright notices are kept where required. See [LIC
 
 ## What It Does
 
-The driver subscribes to the OpenDTU MQTT wildcard topic:
+The driver subscribes to the OpenDTU MQTT wildcard topics:
 
 ```text
-opendtu/+/status/power
+solar/+/0/+
+solar/+/name
 ```
 
-Whenever a power message arrives, the inverter serial number is extracted from the topic. For example:
+Only topics where the second path segment is a long numeric inverter serial number are accepted. OpenDTU helper topics such as `powerlimiter`, `ac`, `dc`, `dtu`, `device`, `status`, and `radio` are ignored.
+
+The aggregate inverter values are read from channel `0`. Panel channels such as `1`, `2`, `3`, and `4` are ignored. For example:
 
 ```text
-opendtu/114183123456/status/power
+solar/<serial>/0/power
 ```
 
 creates this Venus OS D-Bus service automatically:
 
 ```text
-com.victronenergy.pvinverter.mqtt_114183123456
+com.victronenergy.pvinverter.mqtt_<serial>
 ```
+
+The OpenDTU `name` topic is passed to Venus OS as the D-Bus `/CustomName`, so the inverter appears with its configured OpenDTU name instead of only the serial number.
 
 If an inverter stops publishing for the internal timeout period, its D-Bus service is removed again.
 
@@ -75,10 +80,16 @@ broker_address = 192.168.1.10
 broker_port = 1883
 username =
 password =
-base_topic = opendtu
+base_topic = solar
 ```
 
-Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, and device instances are derived automatically at runtime.
+Use the MQTT root topic configured in OpenDTU. For the common OpenDTU layout shown above, set:
+
+```ini
+base_topic = solar
+```
+
+Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, display names, and device instances are derived automatically at runtime.
 
 ## How The Limit Feedback Works
 
@@ -91,7 +102,7 @@ Victron ESS writes the requested AC power limit to the D-Bus path:
 The driver catches that write on the matching inverter service, maps it back to the inverter serial number, and publishes the limit directly to OpenDTU:
 
 ```text
-opendtu/<serial>/cmd/limit_nonpersistent_absolute
+solar/<serial>/cmd/limit_nonpersistent_absolute
 ```
 
 Payload format:
