@@ -87,6 +87,14 @@ def service_name_for_serial(serial):
     return "com.victronenergy.pvinverter.mqtt_%s" % sanitize_service_suffix(serial)
 
 
+def is_own_service_name(service_name):
+    prefix = "com.victronenergy.pvinverter.mqtt_"
+    if not service_name.startswith(prefix):
+        return False
+
+    return INVERTER_SERIAL_RE.match(service_name[len(prefix) :]) is not None
+
+
 def device_instance_map_file():
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), "device_instances.json")
 
@@ -133,7 +141,7 @@ def used_device_instances():
             service_name = str(service_name)
             if not service_name.startswith("com.victronenergy."):
                 continue
-            if service_name.startswith("com.victronenergy.pvinverter.mqtt_"):
+            if is_own_service_name(service_name):
                 continue
 
             try:
