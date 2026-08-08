@@ -147,7 +147,7 @@ When Victron writes a limit to `/Ac/MaxPower`, the log shows:
 
 ```text
 Received D-Bus limit write for inverter <serial>: /Ac/MaxPower=250
-Published OpenDTU limit for <serial> to solar/<serial>/cmd/limit_nonpersistent_absolute: {"value": 250}
+Published OpenDTU limit for <serial> to solar/<serial>/cmd/limit_nonpersistent_absolute: 250
 ```
 
 To check only limit-related log lines:
@@ -192,8 +192,8 @@ solar/<serial>/cmd/limit_nonpersistent_absolute
 
 Payload format:
 
-```json
-{"value": 250}
+```text
+250
 ```
 
 The limit is non-persistent, so it is suitable for dynamic zero-feed-in control.

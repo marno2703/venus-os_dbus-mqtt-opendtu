@@ -6,7 +6,7 @@
 - Added MQTT autodiscovery via the configured OpenDTU base topic.
 - Added dynamic D-Bus PV inverter services per OpenDTU inverter serial number.
 - Added explicit D-Bus `/Serial` values per inverter.
-- Added direct ESS limit feedback to `<base_topic>/<serial>/cmd/limit_nonpersistent_absolute`.
+- Added direct ESS limit feedback to `<base_topic>/<serial>/cmd/limit_nonpersistent_absolute` with a raw numeric payload.
 - Added filtering so only long numeric inverter serial numbers are accepted.
 - Added OpenDTU `name` forwarding to the Venus OS D-Bus `/CustomName`.
 - Added discovery logs for inverter serial numbers and assigned DeviceInstance values.

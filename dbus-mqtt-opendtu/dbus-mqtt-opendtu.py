@@ -360,7 +360,7 @@ class OpenDtuInverterService:
         logging.info("Received D-Bus limit write for inverter %s: %s=%s", self.serial, path, value)
         try:
             limit = max(0, int(float(value)))
-            payload = json.dumps({"value": limit})
+            payload = str(limit)
             topic = command_topic(self.serial)
             result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
