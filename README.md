@@ -144,6 +144,18 @@ For every detected inverter, the log should contain a line like:
 Created D-Bus service for OpenDTU inverter <serial> with DeviceInstance 100
 ```
 
+The driver also writes its current discovery state to:
+
+```text
+/data/etc/dbus-mqtt-opendtu/runtime_state.json
+```
+
+Use this file to verify which MQTT topics were seen, which inverter serial numbers were accepted, which metrics are still pending, and which D-Bus services were created:
+
+```sh
+cat /data/etc/dbus-mqtt-opendtu/runtime_state.json
+```
+
 ## How The Limit Feedback Works
 
 Victron ESS writes the requested AC power limit to the D-Bus path:

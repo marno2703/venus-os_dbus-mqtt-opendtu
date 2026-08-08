@@ -29,6 +29,7 @@ DEFAULT_POSITION = 0
 DEFAULT_MAX_POWER = 100000
 FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
+MAX_RECORDED_TOPICS = 50
 
 config = None
 manager = None
@@ -99,6 +100,10 @@ def device_instance_map_file():
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), "device_instances.json")
 
 
+def runtime_state_file():
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "runtime_state.json")
+
+
 def load_device_instance_map():
     path = device_instance_map_file()
     if not os.path.exists(path):
@@ -129,6 +134,17 @@ def save_device_instance_map(instances):
             handle.write("\n")
     except Exception as err:
         logging.warning("Could not write device instance map %s: %s", path, err)
+
+
+def write_json_file(path, data):
+    tmp_path = "%s.tmp" % path
+    try:
+        with open(tmp_path, "w") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.rename(tmp_path, path)
+    except Exception as err:
+        logging.warning("Could not write %s: %s", path, err)
 
 
 def used_device_instances():
@@ -336,17 +352,30 @@ class OpenDtuManager:
         self.device_instances = load_device_instance_map()
         self.used_device_instances = used_device_instances()
         self.names = {}
+        self.pending_metrics = {}
+        self.seen_topics = []
+        self.ignored_topics = []
 
     def handle_metric_message(self, serial, metric, value):
         service = self.inverters.get(serial)
         if service is None:
+            self.pending_metrics.setdefault(serial, {})[metric] = value
+            if metric != "power":
+                self.write_runtime_state()
+                return False
+
             service = OpenDtuInverterService(serial, self._device_instance_for(serial))
             self.inverters[serial] = service
             if serial in self.names:
                 service.update_name(self.names[serial])
             logging.info("Discovered OpenDTU inverter %s from metric %s", serial, metric)
 
+            for pending_metric, pending_value in self.pending_metrics.pop(serial, {}).items():
+                if pending_metric != metric:
+                    service.update_metric(pending_metric, pending_value)
+
         service.update_metric(metric, value)
+        self.write_runtime_state()
         return False
 
     def handle_name_message(self, serial, name):
@@ -354,7 +383,38 @@ class OpenDtuManager:
         service = self.inverters.get(serial)
         if service is not None:
             service.update_name(name)
+        self.write_runtime_state()
         return False
+
+    def record_topic(self, topic, parsed_topic):
+        target = self.seen_topics if parsed_topic is not None else self.ignored_topics
+        target.append({"time": int(time()), "topic": topic})
+        del target[:-MAX_RECORDED_TOPICS]
+        self.write_runtime_state()
+        return False
+
+    def write_runtime_state(self):
+        state = {
+            "base_topic": base_topic(),
+            "subscription": opendtu_topic(),
+            "inverters": {},
+            "names": self.names,
+            "pending_metrics": self.pending_metrics,
+            "seen_topics": self.seen_topics,
+            "ignored_topics": self.ignored_topics,
+        }
+
+        for serial, service in self.inverters.items():
+            state["inverters"][serial] = {
+                "service_name": service_name_for_serial(serial),
+                "device_instance": service._dbusservice["/DeviceInstance"],
+                "custom_name": service._dbusservice["/CustomName"],
+                "connected": service._dbusservice["/Connected"],
+                "power": service._dbusservice["/Ac/Power"],
+                "last_seen": service.last_seen,
+            }
+
+        write_json_file(runtime_state_file(), state)
 
     def cleanup_inactive(self):
         timeout = DEFAULT_INVERTER_TIMEOUT
@@ -430,6 +490,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 def on_message(client, userdata, msg):
     try:
         parsed_topic = parse_opendtu_topic(msg.topic)
+        GLib.idle_add(manager.record_topic, msg.topic, parsed_topic)
         if parsed_topic is None:
             logging.debug("Ignoring MQTT topic outside OpenDTU inverter data: %s", msg.topic)
             return
