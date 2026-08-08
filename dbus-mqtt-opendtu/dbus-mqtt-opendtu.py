@@ -192,31 +192,31 @@ def used_device_instances():
 
 
 def text_kwh(path, value):
-    return "" if value is None else "%.2fkWh" % value
+    return "" if value is None else "%.2fkWh" % float(value)
 
 
 def text_a(path, value):
-    return "" if value is None else "%.1fA" % value
+    return "" if value is None else "%.1fA" % float(value)
 
 
 def text_w(path, value):
-    return "" if value is None else "%iW" % value
+    return "" if value is None else "%iW" % int(float(value))
 
 
 def text_v(path, value):
-    return "" if value is None else "%.2fV" % value
+    return "" if value is None else "%.2fV" % float(value)
 
 
 def text_hz(path, value):
-    return "" if value is None else "%.2fHz" % value
+    return "" if value is None else "%.2fHz" % float(value)
 
 
 def text_pf(path, value):
-    return "" if value is None else "%.3f" % value
+    return "" if value is None else "%.3f" % float(value)
 
 
 def text_n(path, value):
-    return "" if value is None else "%i" % value
+    return "" if value is None else "%i" % int(float(value))
 
 
 def parse_payload(payload):
