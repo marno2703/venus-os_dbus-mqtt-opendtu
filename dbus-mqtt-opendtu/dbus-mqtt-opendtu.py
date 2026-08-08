@@ -1,0 +1,341 @@
+#!/usr/bin/env python
+
+from gi.repository import GLib  # pyright: ignore[reportMissingImports]
+import configparser
+import json
+import logging
+import os
+import platform
+import re
+import sys
+import zlib
+from time import sleep, time
+
+# import external packages
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext"))
+import paho.mqtt.client as mqtt  # noqa: E402
+
+# import Victron Energy packages
+sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext", "velib_python"))
+from vedbus import VeDbusService  # noqa: E402
+from ve_utils import get_vrm_portal_id  # noqa: E402
+
+
+FIRMWARE_VERSION = "0.2.0-opendtu"
+DEFAULT_BASE_TOPIC = "opendtu"
+DEFAULT_INVERTER_TIMEOUT = 300
+DEFAULT_POSITION = 0
+DEFAULT_MAX_POWER = 100000
+
+config = None
+manager = None
+mqtt_client = None
+
+
+def load_config():
+    config_file = os.path.join(os.path.dirname(os.path.realpath(__file__)), "config.ini")
+    if not os.path.exists(config_file):
+        print(
+            'ERROR:The "%s" is not found. Did you copy or rename the "config.sample.ini" to "config.ini"? '
+            "The driver restarts in 60 seconds." % config_file
+        )
+        sleep(60)
+        sys.exit()
+
+    parser = configparser.ConfigParser()
+    parser.read(config_file)
+
+    if "MQTT" not in parser:
+        print('ERROR:The "config.ini" must contain an [MQTT] section. The driver restarts in 60 seconds.')
+        sleep(60)
+        sys.exit()
+
+    if parser["MQTT"].get("broker_address", "") in ("", "IP_ADDR_OR_FQDN"):
+        print('ERROR:The "config.ini" is using an invalid broker_address. The driver restarts in 60 seconds.')
+        sleep(60)
+        sys.exit()
+
+    return parser
+
+
+def setup_logging():
+    logging.basicConfig(level=logging.WARNING)
+
+
+def base_topic():
+    return config["MQTT"].get("base_topic", DEFAULT_BASE_TOPIC).strip("/")
+
+
+def status_power_topic():
+    return "%s/+/status/power" % base_topic()
+
+
+def command_topic(serial):
+    return "%s/%s/cmd/limit_nonpersistent_absolute" % (base_topic(), serial)
+
+
+def sanitize_service_suffix(value):
+    suffix = re.sub(r"[^A-Za-z0-9_]", "_", value)
+    suffix = suffix.strip("_")
+    return suffix or "unknown"
+
+
+def text_kwh(path, value):
+    return "" if value is None else "%.2fkWh" % value
+
+
+def text_a(path, value):
+    return "" if value is None else "%.1fA" % value
+
+
+def text_w(path, value):
+    return "" if value is None else "%iW" % value
+
+
+def text_v(path, value):
+    return "" if value is None else "%.2fV" % value
+
+
+def text_n(path, value):
+    return "" if value is None else "%i" % value
+
+
+def parse_power_payload(payload):
+    if payload in ("", b""):
+        raise ValueError("empty payload")
+
+    decoded = payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
+    parsed = json.loads(decoded)
+
+    if isinstance(parsed, dict):
+        if "value" in parsed:
+            return float(parsed["value"])
+        if "power" in parsed:
+            return float(parsed["power"])
+        raise ValueError("payload object does not contain value or power")
+
+    return float(parsed)
+
+
+class OpenDtuInverterService:
+    def __init__(self, serial, deviceinstance):
+        self.serial = serial
+        self.last_seen = int(time())
+        self.power = 0.0
+        self._dbusservice = VeDbusService(
+            "com.victronenergy.pvinverter.mqtt_%s" % sanitize_service_suffix(serial),
+            register=False,
+        )
+
+        self._dbusservice.add_path("/Mgmt/ProcessName", __file__)
+        self._dbusservice.add_path(
+            "/Mgmt/ProcessVersion",
+            "Unknown version, and running on Python " + platform.python_version(),
+        )
+        self._dbusservice.add_path("/Mgmt/Connection", "OpenDTU MQTT %s" % serial)
+
+        self._dbusservice.add_path("/DeviceInstance", deviceinstance)
+        self._dbusservice.add_path("/ProductId", 0xFFFF)
+        self._dbusservice.add_path("/ProductName", "OpenDTU PV Inverter")
+        self._dbusservice.add_path("/CustomName", "OpenDTU %s" % serial)
+        self._dbusservice.add_path("/FirmwareVersion", FIRMWARE_VERSION)
+        self._dbusservice.add_path("/Connected", 1)
+
+        self._dbusservice.add_path("/Latency", None)
+        self._dbusservice.add_path("/ErrorCode", 0)
+        self._dbusservice.add_path("/Position", DEFAULT_POSITION)
+        self._dbusservice.add_path("/StatusCode", 8)
+        self._dbusservice.add_path("/UpdateIndex", 0, gettextcallback=text_n)
+
+        self._dbusservice.add_path("/Ac/Power", 0, gettextcallback=text_w)
+        self._dbusservice.add_path("/Ac/Current", None, gettextcallback=text_a)
+        self._dbusservice.add_path("/Ac/Voltage", None, gettextcallback=text_v)
+        self._dbusservice.add_path("/Ac/Energy/Forward", None, gettextcallback=text_kwh)
+        self._dbusservice.add_path(
+            "/Ac/MaxPower",
+            DEFAULT_MAX_POWER,
+            gettextcallback=text_w,
+            writeable=True,
+            onchangecallback=self._handle_max_power_changed,
+        )
+        self._dbusservice.add_path("/Ac/Position", DEFAULT_POSITION, gettextcallback=text_n)
+        self._dbusservice.add_path("/Ac/StatusCode", 8, gettextcallback=text_n)
+
+        self._dbusservice.add_path("/Ac/L1/Power", 0, gettextcallback=text_w)
+        self._dbusservice.add_path("/Ac/L1/Current", None, gettextcallback=text_a)
+        self._dbusservice.add_path("/Ac/L1/Voltage", None, gettextcallback=text_v)
+        self._dbusservice.add_path("/Ac/L1/Energy/Forward", None, gettextcallback=text_kwh)
+
+        self._dbusservice.register()
+        logging.info("Created D-Bus service for OpenDTU inverter %s", serial)
+
+    def update_power(self, power):
+        self.last_seen = int(time())
+        self.power = round(power, 2)
+
+        self._dbusservice["/Connected"] = 1
+        self._dbusservice["/Ac/Power"] = self.power
+        self._dbusservice["/Ac/L1/Power"] = self.power
+
+        status = 7 if self.power >= 10 else 8
+        self._dbusservice["/StatusCode"] = status
+        self._dbusservice["/Ac/StatusCode"] = status
+
+        index = self._dbusservice["/UpdateIndex"] + 1
+        self._dbusservice["/UpdateIndex"] = 0 if index > 255 else index
+
+    def close(self):
+        logging.info("Removing D-Bus service for inactive OpenDTU inverter %s", self.serial)
+        self._dbusservice["/Connected"] = 0
+        self._dbusservice.__del__()
+
+    def _handle_max_power_changed(self, path, value):
+        try:
+            limit = max(0, int(float(value)))
+            payload = json.dumps({"value": limit})
+            topic = command_topic(self.serial)
+            mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
+            logging.info("Sent OpenDTU limit for %s: %s W", self.serial, limit)
+            return True
+        except Exception:
+            exception_type, exception_object, exception_traceback = sys.exc_info()
+            file = exception_traceback.tb_frame.f_code.co_filename
+            line = exception_traceback.tb_lineno
+            logging.error("Failed to publish OpenDTU limit: %r of type %s in %s line #%s", exception_object, exception_type, file, line)
+            return False
+
+
+class OpenDtuManager:
+    def __init__(self):
+        self.inverters = {}
+        self.device_instances = {}
+
+    def handle_power_message(self, serial, power):
+        service = self.inverters.get(serial)
+        if service is None:
+            service = OpenDtuInverterService(serial, self._device_instance_for(serial))
+            self.inverters[serial] = service
+
+        service.update_power(power)
+        return False
+
+    def cleanup_inactive(self):
+        timeout = DEFAULT_INVERTER_TIMEOUT
+        if timeout <= 0:
+            return True
+
+        now = int(time())
+        inactive = [
+            serial
+            for serial, service in self.inverters.items()
+            if now - service.last_seen > timeout
+        ]
+        for serial in inactive:
+            self.inverters.pop(serial).close()
+
+        return True
+
+    def _device_instance_for(self, serial):
+        if serial in self.device_instances:
+            return self.device_instances[serial]
+
+        candidate = 100 + (zlib.crc32(serial.encode("utf-8")) % 900)
+        used = set(self.device_instances.values())
+        while candidate in used:
+            candidate += 1
+            if candidate > 999:
+                candidate = 100
+
+        self.device_instances[serial] = candidate
+        return candidate
+
+
+def extract_serial(topic):
+    prefix = base_topic() + "/"
+    suffix = "/status/power"
+    if not topic.startswith(prefix) or not topic.endswith(suffix):
+        return None
+
+    serial = topic[len(prefix) : -len(suffix)]
+    return serial if serial and "/" not in serial else None
+
+
+def on_disconnect(client, userdata, flags, reason_code, properties):
+    logging.warning("MQTT client: disconnected with reason code %s", reason_code)
+
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code == 0:
+        topic = status_power_topic()
+        logging.info("MQTT client: connected, subscribing to %s", topic)
+        client.subscribe(topic)
+    else:
+        logging.error("MQTT client: failed to connect, return code %s", reason_code)
+
+
+def on_message(client, userdata, msg):
+    try:
+        serial = extract_serial(msg.topic)
+        if serial is None:
+            logging.debug("Ignoring MQTT topic outside OpenDTU power subscription: %s", msg.topic)
+            return
+
+        power = parse_power_payload(msg.payload)
+        GLib.idle_add(manager.handle_power_message, serial, power)
+    except Exception:
+        exception_type, exception_object, exception_traceback = sys.exc_info()
+        file = exception_traceback.tb_frame.f_code.co_filename
+        line = exception_traceback.tb_lineno
+        logging.error("Failed to process MQTT message: %r of type %s in %s line #%s", exception_object, exception_type, file, line)
+        logging.debug("MQTT topic: %s payload: %s", msg.topic, msg.payload)
+
+
+def setup_mqtt_client():
+    client_id = "OpenDtuPv_%s" % get_vrm_portal_id()
+    client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+    client.on_disconnect = on_disconnect
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.reconnect_delay_set(min_delay=5, max_delay=60)
+
+    username = config["MQTT"].get("username", "")
+    password = config["MQTT"].get("password", "")
+    if username and password:
+        logging.info('MQTT client: using username "%s"', username)
+        client.username_pw_set(username=username, password=password)
+
+    return client
+
+
+def main():
+    global config, manager, mqtt_client
+
+    from dbus.mainloop.glib import DBusGMainLoop  # pyright: ignore[reportMissingImports]
+
+    DBusGMainLoop(set_as_default=True)
+
+    config = load_config()
+    setup_logging()
+    manager = OpenDtuManager()
+
+    mqtt_client = setup_mqtt_client()
+    logging.info(
+        "MQTT client: connecting to broker %s on port %s",
+        config["MQTT"]["broker_address"],
+        config["MQTT"].get("broker_port", "1883"),
+    )
+    mqtt_client.connect(
+        host=config["MQTT"]["broker_address"],
+        port=int(config["MQTT"].get("broker_port", "1883")),
+    )
+    mqtt_client.loop_start()
+
+    GLib.timeout_add_seconds(10, manager.cleanup_inactive)
+
+    logging.info("Connected to D-Bus and switching over to GLib.MainLoop()")
+    mainloop = GLib.MainLoop()
+    mainloop.run()
+
+
+if __name__ == "__main__":
+    main()

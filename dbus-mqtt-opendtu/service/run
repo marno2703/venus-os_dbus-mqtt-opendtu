@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "*** starting dbus-mqtt-opendtu ***"
+exec 2>&1
+exec python /data/etc/dbus-mqtt-opendtu/dbus-mqtt-opendtu.py
