@@ -90,7 +90,7 @@ Use the MQTT root topic configured in OpenDTU. For the common OpenDTU layout sho
 base_topic = solar
 ```
 
-Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, display names, and device instances are derived automatically at runtime.
+Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, display names, and device instances are derived automatically at runtime. Device instances are assigned sequentially starting at `100`.
 
 ## Start, Restart, Status, Logs
 

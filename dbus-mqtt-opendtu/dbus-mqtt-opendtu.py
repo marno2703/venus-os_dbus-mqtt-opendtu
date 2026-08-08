@@ -8,7 +8,6 @@ import os
 import platform
 import re
 import sys
-import zlib
 from time import sleep, time
 
 # import external packages
@@ -26,6 +25,7 @@ DEFAULT_BASE_TOPIC = "solar"
 DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
 DEFAULT_MAX_POWER = 100000
+FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
 
 config = None
@@ -259,6 +259,7 @@ class OpenDtuManager:
         self.inverters = {}
         self.device_instances = {}
         self.names = {}
+        self.next_device_instance = FIRST_DEVICE_INSTANCE
 
     def handle_metric_message(self, serial, metric, value):
         service = self.inverters.get(serial)
@@ -298,15 +299,10 @@ class OpenDtuManager:
         if serial in self.device_instances:
             return self.device_instances[serial]
 
-        candidate = 100 + (zlib.crc32(serial.encode("utf-8")) % 900)
-        used = set(self.device_instances.values())
-        while candidate in used:
-            candidate += 1
-            if candidate > 999:
-                candidate = 100
-
-        self.device_instances[serial] = candidate
-        return candidate
+        deviceinstance = self.next_device_instance
+        self.next_device_instance += 1
+        self.device_instances[serial] = deviceinstance
+        return deviceinstance
 
 
 def parse_opendtu_topic(topic):
