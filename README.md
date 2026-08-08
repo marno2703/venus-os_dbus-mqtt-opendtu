@@ -143,17 +143,17 @@ Show the live log:
 tail -n 100 -F /var/log/dbus-mqtt-opendtu/current | tai64nlocal
 ```
 
-When Victron writes a limit to `/Ac/MaxPower`, the log shows:
+When Victron writes a limit to `/Ac/PowerLimit`, the log shows:
 
 ```text
-Received D-Bus limit write for inverter <serial>: /Ac/MaxPower=250
+Received D-Bus limit write for inverter <serial>: /Ac/PowerLimit=250
 Published OpenDTU limit for <serial> to solar/<serial>/cmd/limit_nonpersistent_absolute: 250
 ```
 
 To check only limit-related log lines:
 
 ```sh
-tail -n 300 /var/log/dbus-mqtt-opendtu/current | tai64nlocal | grep -E 'limit|MaxPower'
+tail -n 300 /var/log/dbus-mqtt-opendtu/current | tai64nlocal | grep -E 'limit|PowerLimit'
 ```
 
 For every detected inverter, the log should contain a line like:
@@ -181,7 +181,7 @@ Limit attempts are also stored in `runtime_state.json` under `limit_events`.
 Victron ESS writes the requested AC power limit to the D-Bus path:
 
 ```text
-/Ac/MaxPower
+/Ac/PowerLimit
 ```
 
 The driver catches that write on the matching inverter service, maps it back to the inverter serial number, and publishes the limit directly to OpenDTU:
