@@ -10,6 +10,8 @@ import re
 import sys
 from time import sleep, time
 
+import dbus  # pyright: ignore[reportMissingImports]
+
 # import external packages
 sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext"))
 import paho.mqtt.client as mqtt  # noqa: E402
@@ -81,6 +83,71 @@ def sanitize_service_suffix(value):
     return suffix or "unknown"
 
 
+def service_name_for_serial(serial):
+    return "com.victronenergy.pvinverter.mqtt_%s" % sanitize_service_suffix(serial)
+
+
+def device_instance_map_file():
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "device_instances.json")
+
+
+def load_device_instance_map():
+    path = device_instance_map_file()
+    if not os.path.exists(path):
+        return {}
+
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except Exception as err:
+        logging.warning("Could not read device instance map %s: %s", path, err)
+        return {}
+
+    instances = {}
+    for serial, value in data.items():
+        if INVERTER_SERIAL_RE.match(serial):
+            try:
+                instances[serial] = int(value)
+            except (TypeError, ValueError):
+                logging.warning("Ignoring invalid stored DeviceInstance for %s: %s", serial, value)
+    return instances
+
+
+def save_device_instance_map(instances):
+    path = device_instance_map_file()
+    try:
+        with open(path, "w") as handle:
+            json.dump(instances, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except Exception as err:
+        logging.warning("Could not write device instance map %s: %s", path, err)
+
+
+def used_device_instances():
+    used = set()
+    try:
+        bus = dbus.SystemBus()
+        bus_object = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        bus_iface = dbus.Interface(bus_object, "org.freedesktop.DBus")
+        for service_name in bus_iface.ListNames():
+            service_name = str(service_name)
+            if not service_name.startswith("com.victronenergy."):
+                continue
+            if service_name.startswith("com.victronenergy.pvinverter.mqtt_"):
+                continue
+
+            try:
+                device = bus.get_object(service_name, "/DeviceInstance")
+                item = dbus.Interface(device, "com.victronenergy.BusItem")
+                used.add(int(item.GetValue()))
+            except Exception:
+                pass
+    except Exception as err:
+        logging.warning("Could not scan existing D-Bus DeviceInstance values: %s", err)
+
+    return used
+
+
 def text_kwh(path, value):
     return "" if value is None else "%.2fkWh" % value
 
@@ -147,7 +214,7 @@ class OpenDtuInverterService:
         self.name = None
         self.power = 0.0
         self._dbusservice = VeDbusService(
-            "com.victronenergy.pvinverter.mqtt_%s" % sanitize_service_suffix(serial),
+            service_name_for_serial(serial),
             register=False,
         )
 
@@ -257,9 +324,9 @@ class OpenDtuInverterService:
 class OpenDtuManager:
     def __init__(self):
         self.inverters = {}
-        self.device_instances = {}
+        self.device_instances = load_device_instance_map()
+        self.used_device_instances = used_device_instances()
         self.names = {}
-        self.next_device_instance = FIRST_DEVICE_INSTANCE
 
     def handle_metric_message(self, serial, metric, value):
         service = self.inverters.get(serial)
@@ -297,11 +364,20 @@ class OpenDtuManager:
 
     def _device_instance_for(self, serial):
         if serial in self.device_instances:
-            return self.device_instances[serial]
+            deviceinstance = self.device_instances[serial]
+            if deviceinstance not in self.used_device_instances:
+                self.used_device_instances.add(deviceinstance)
+                return deviceinstance
+            logging.warning("Stored DeviceInstance %s for %s is already used. Assigning a new one.", deviceinstance, serial)
 
-        deviceinstance = self.next_device_instance
-        self.next_device_instance += 1
+        deviceinstance = FIRST_DEVICE_INSTANCE
+        used = self.used_device_instances.union(set(self.device_instances.values()))
+        while deviceinstance in used:
+            deviceinstance += 1
+
         self.device_instances[serial] = deviceinstance
+        self.used_device_instances.add(deviceinstance)
+        save_device_instance_map(self.device_instances)
         return deviceinstance
 
 

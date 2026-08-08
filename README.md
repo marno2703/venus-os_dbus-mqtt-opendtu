@@ -90,7 +90,15 @@ Use the MQTT root topic configured in OpenDTU. For the common OpenDTU layout sho
 base_topic = solar
 ```
 
-Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, display names, and device instances are derived automatically at runtime. Device instances are assigned sequentially starting at `100`.
+Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, display names, and device instances are derived automatically at runtime.
+
+Device instances are assigned automatically from `100` upward. The driver scans existing Venus OS D-Bus services and skips already used values. The serial-to-instance mapping is stored in:
+
+```text
+/data/etc/dbus-mqtt-opendtu/device_instances.json
+```
+
+This keeps each inverter on the same DeviceInstance after a driver restart.
 
 ## Start, Restart, Status, Logs
 
