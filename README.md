@@ -86,6 +86,9 @@ broker_port = 1883
 username =
 password =
 base_topic = solar
+
+[DRIVER]
+debug = 0
 ```
 
 Use the MQTT root topic configured in OpenDTU. For the common OpenDTU layout shown above, set:
@@ -103,6 +106,8 @@ Device instances are assigned automatically from `100` upward. The driver scans 
 ```
 
 This keeps each inverter on the same DeviceInstance after a driver restart.
+
+Set `debug = 1` to enable verbose diagnostics for MQTT topic parsing, D-Bus updates, and limit writes. Restart the driver after changing this value.
 
 ## Start, Restart, Status, Logs
 
@@ -138,6 +143,19 @@ Show the live log:
 tail -n 100 -F /var/log/dbus-mqtt-opendtu/current | tai64nlocal
 ```
 
+When Victron writes a limit to `/Ac/MaxPower`, the log shows:
+
+```text
+Received D-Bus limit write for inverter <serial>: /Ac/MaxPower=250
+Published OpenDTU limit for <serial> to solar/<serial>/cmd/limit_nonpersistent_absolute: {"value": 250}
+```
+
+To check only limit-related log lines:
+
+```sh
+tail -n 300 /var/log/dbus-mqtt-opendtu/current | tai64nlocal | grep -E 'limit|MaxPower'
+```
+
 For every detected inverter, the log should contain a line like:
 
 ```text
@@ -155,6 +173,8 @@ Use this file to verify which MQTT topics were seen, which inverter serial numbe
 ```sh
 cat /data/etc/dbus-mqtt-opendtu/runtime_state.json
 ```
+
+Limit attempts are also stored in `runtime_state.json` under `limit_events`.
 
 ## How The Limit Feedback Works
 

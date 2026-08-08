@@ -11,6 +11,8 @@
 - Added OpenDTU `name` forwarding to the Venus OS D-Bus `/CustomName`.
 - Added discovery logs for inverter serial numbers and assigned DeviceInstance values.
 - Added `/data/etc/dbus-mqtt-opendtu/runtime_state.json` for MQTT topic and D-Bus discovery diagnostics.
+- Added configurable debug logging via `[DRIVER] debug = 1`.
+- Added explicit logs and runtime-state events for Victron `/Ac/MaxPower` limit writes and OpenDTU limit publishes.
 - Changed startup behavior so retained `name` topics alone do not create disconnected placeholder devices.
 - Changed inverter service creation to require a channel `0` `power` metric.
 - Changed each inverter service to use its own private D-Bus connection, allowing multiple services in one process.

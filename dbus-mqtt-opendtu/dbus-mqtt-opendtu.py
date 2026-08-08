@@ -63,7 +63,12 @@ def load_config():
 
 
 def setup_logging():
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG if debug_enabled() else logging.INFO)
+    logging.info("OpenDTU driver debug logging is %s", "enabled" if debug_enabled() else "disabled")
+
+
+def debug_enabled():
+    return config.getboolean("DRIVER", "debug", fallback=False)
 
 
 def base_topic():
@@ -145,6 +150,20 @@ def write_json_file(path, data):
         os.rename(tmp_path, path)
     except Exception as err:
         logging.warning("Could not write %s: %s", path, err)
+
+
+def json_safe_value(value):
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    return str(value)
 
 
 def used_device_instances():
@@ -292,6 +311,7 @@ class OpenDtuInverterService:
     def update_metric(self, metric, value):
         self.last_seen = int(time())
         self._dbusservice["/Connected"] = 1
+        logging.debug("Updating inverter %s metric %s=%s", self.serial, metric, value)
 
         if metric == "power":
             self.power = round(value, 2)
@@ -337,12 +357,18 @@ class OpenDtuInverterService:
             pass
 
     def _handle_max_power_changed(self, path, value):
+        logging.info("Received D-Bus limit write for inverter %s: %s=%s", self.serial, path, value)
         try:
             limit = max(0, int(float(value)))
             payload = json.dumps({"value": limit})
             topic = command_topic(self.serial)
-            mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
-            logging.info("Sent OpenDTU limit for %s: %s W", self.serial, limit)
+            result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logging.info("Published OpenDTU limit for %s to %s: %s", self.serial, topic, payload)
+            else:
+                logging.error("Failed to queue OpenDTU limit for %s to %s: rc=%s payload=%s", self.serial, topic, result.rc, payload)
+            if manager is not None:
+                manager.record_limit_event(self.serial, path, value, topic, payload, result.rc)
             return True
         except Exception:
             exception_type, exception_object, exception_traceback = sys.exc_info()
@@ -361,11 +387,13 @@ class OpenDtuManager:
         self.pending_metrics = {}
         self.seen_topics = []
         self.ignored_topics = []
+        self.limit_events = []
 
     def handle_metric_message(self, serial, metric, value):
         service = self.inverters.get(serial)
         if service is None:
             self.pending_metrics.setdefault(serial, {})[metric] = value
+            logging.debug("Buffered inverter %s metric %s=%s until power is received", serial, metric, value)
             if metric != "power":
                 self.write_runtime_state()
                 return False
@@ -386,6 +414,7 @@ class OpenDtuManager:
 
     def handle_name_message(self, serial, name):
         self.names[serial] = name
+        logging.debug("Received OpenDTU inverter %s name=%s", serial, name)
         service = self.inverters.get(serial)
         if service is not None:
             service.update_name(name)
@@ -396,8 +425,27 @@ class OpenDtuManager:
         target = self.seen_topics if parsed_topic is not None else self.ignored_topics
         target.append({"time": int(time()), "topic": topic})
         del target[:-MAX_RECORDED_TOPICS]
+        if parsed_topic is None:
+            logging.debug("Ignored MQTT topic: %s", topic)
+        else:
+            logging.debug("Accepted MQTT topic: %s -> %s", topic, parsed_topic)
         self.write_runtime_state()
         return False
+
+    def record_limit_event(self, serial, path, value, topic, payload, result_code):
+        self.limit_events.append(
+            {
+                "time": int(time()),
+                "serial": serial,
+                "dbus_path": path,
+                "dbus_value": json_safe_value(value),
+                "mqtt_topic": topic,
+                "mqtt_payload": payload,
+                "mqtt_result_code": json_safe_value(result_code),
+            }
+        )
+        del self.limit_events[:-MAX_RECORDED_TOPICS]
+        self.write_runtime_state()
 
     def write_runtime_state(self):
         state = {
@@ -406,6 +454,7 @@ class OpenDtuManager:
             "inverters": {},
             "names": self.names,
             "pending_metrics": self.pending_metrics,
+            "limit_events": self.limit_events,
             "seen_topics": self.seen_topics,
             "ignored_topics": self.ignored_topics,
         }
@@ -413,10 +462,10 @@ class OpenDtuManager:
         for serial, service in self.inverters.items():
             state["inverters"][serial] = {
                 "service_name": service_name_for_serial(serial),
-                "device_instance": service._dbusservice["/DeviceInstance"],
-                "custom_name": service._dbusservice["/CustomName"],
-                "connected": service._dbusservice["/Connected"],
-                "power": service._dbusservice["/Ac/Power"],
+                "device_instance": json_safe_value(service._dbusservice["/DeviceInstance"]),
+                "custom_name": json_safe_value(service._dbusservice["/CustomName"]),
+                "connected": json_safe_value(service._dbusservice["/Connected"]),
+                "power": json_safe_value(service._dbusservice["/Ac/Power"]),
                 "last_seen": service.last_seen,
             }
 
@@ -495,6 +544,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 def on_message(client, userdata, msg):
     try:
+        logging.debug("Received MQTT message topic=%s payload=%s", msg.topic, msg.payload)
         parsed_topic = parse_opendtu_topic(msg.topic)
         GLib.idle_add(manager.record_topic, msg.topic, parsed_topic)
         if parsed_topic is None:
@@ -521,6 +571,8 @@ def setup_mqtt_client():
     client.on_connect = on_connect
     client.on_message = on_message
     client.reconnect_delay_set(min_delay=5, max_delay=60)
+    if debug_enabled():
+        client.enable_logger(logging.getLogger("paho.mqtt"))
 
     username = config["MQTT"].get("username", "")
     password = config["MQTT"].get("password", "")
