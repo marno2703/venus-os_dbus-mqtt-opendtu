@@ -26,7 +26,7 @@ FIRMWARE_VERSION = "0.2.0-opendtu"
 DEFAULT_BASE_TOPIC = "solar"
 DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
-DEFAULT_MAX_POWER = 1500
+DEFAULT_MAX_POWER = 100000
 FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
 MAX_RECORDED_TOPICS = 50
@@ -94,16 +94,11 @@ def service_name_for_serial(serial):
 
 
 def is_own_service_name(service_name):
-    prefixes = (
-        "com.victronenergy.pvinverter.fronius_",
-        "com.victronenergy.pvinverter.mqtt_",
-    )
+    prefix = "com.victronenergy.pvinverter.fronius_"
+    if not service_name.startswith(prefix):
+        return False
 
-    for prefix in prefixes:
-        if service_name.startswith(prefix):
-            return INVERTER_SERIAL_RE.match(service_name[len(prefix) :]) is not None
-
-    return False
+    return INVERTER_SERIAL_RE.match(service_name[len(prefix) :]) is not None
 
 
 def device_instance_map_file():
@@ -273,11 +268,11 @@ class OpenDtuInverterService:
             "/Mgmt/ProcessVersion",
             "Unknown version, and running on Python " + platform.python_version(),
         )
-        self._dbusservice.add_path("/Mgmt/Connection", "OpenDTU MQTT Fronius-compatible %s" % serial)
+        self._dbusservice.add_path("/Mgmt/Connection", "OpenDTU MQTT %s" % serial)
 
         self._dbusservice.add_path("/DeviceInstance", deviceinstance)
         self._dbusservice.add_path("/ProductId", 0xFFFF)
-        self._dbusservice.add_path("/ProductName", "Fronius-compatible OpenDTU PV Inverter")
+        self._dbusservice.add_path("/ProductName", "OpenDTU PV Inverter")
         self._dbusservice.add_path("/CustomName", "OpenDTU %s" % serial)
         self._dbusservice.add_path("/FirmwareVersion", FIRMWARE_VERSION)
         self._dbusservice.add_path("/Serial", serial)
@@ -355,7 +350,7 @@ class OpenDtuInverterService:
 
         self.name = name
         self._dbusservice["/CustomName"] = name
-        self._dbusservice["/Mgmt/Connection"] = "OpenDTU MQTT Fronius-compatible %s (%s)" % (self.serial, name)
+        self._dbusservice["/Mgmt/Connection"] = "OpenDTU MQTT %s (%s)" % (self.serial, name)
         logging.info("Updated OpenDTU inverter %s name to %s", self.serial, name)
 
     def close(self):
