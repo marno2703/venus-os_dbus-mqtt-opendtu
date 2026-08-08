@@ -67,12 +67,8 @@ def base_topic():
     return config["MQTT"].get("base_topic", DEFAULT_BASE_TOPIC).strip("/")
 
 
-def inverter_metric_topic():
-    return "%s/+/0/+" % base_topic()
-
-
-def inverter_name_topic():
-    return "%s/+/name" % base_topic()
+def opendtu_topic():
+    return "%s/#" % base_topic()
 
 
 def command_topic(serial):
@@ -167,6 +163,7 @@ class OpenDtuInverterService:
         self._dbusservice.add_path("/ProductName", "OpenDTU PV Inverter")
         self._dbusservice.add_path("/CustomName", "OpenDTU %s" % serial)
         self._dbusservice.add_path("/FirmwareVersion", FIRMWARE_VERSION)
+        self._dbusservice.add_path("/Serial", serial)
         self._dbusservice.add_path("/Connected", 1)
 
         self._dbusservice.add_path("/Latency", None)
@@ -261,23 +258,24 @@ class OpenDtuManager:
     def __init__(self):
         self.inverters = {}
         self.device_instances = {}
+        self.names = {}
 
     def handle_metric_message(self, serial, metric, value):
         service = self.inverters.get(serial)
         if service is None:
             service = OpenDtuInverterService(serial, self._device_instance_for(serial))
             self.inverters[serial] = service
+            if serial in self.names:
+                service.update_name(self.names[serial])
 
         service.update_metric(metric, value)
         return False
 
     def handle_name_message(self, serial, name):
+        self.names[serial] = name
         service = self.inverters.get(serial)
-        if service is None:
-            service = OpenDtuInverterService(serial, self._device_instance_for(serial))
-            self.inverters[serial] = service
-
-        service.update_name(name)
+        if service is not None:
+            service.update_name(name)
         return False
 
     def cleanup_inactive(self):
@@ -340,9 +338,9 @@ def on_disconnect(client, userdata, flags, reason_code, properties):
 
 def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code == 0:
-        topics = [(inverter_metric_topic(), 0), (inverter_name_topic(), 0)]
-        logging.info("MQTT client: connected, subscribing to %s and %s", topics[0][0], topics[1][0])
-        client.subscribe(topics)
+        topic = opendtu_topic()
+        logging.info("MQTT client: connected, subscribing to %s", topic)
+        client.subscribe(topic)
     else:
         logging.error("MQTT client: failed to connect, return code %s", reason_code)
 

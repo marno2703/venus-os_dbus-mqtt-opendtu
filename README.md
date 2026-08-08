@@ -8,11 +8,10 @@ Original project license and copyright notices are kept where required. See [LIC
 
 ## What It Does
 
-The driver subscribes to the OpenDTU MQTT wildcard topics:
+The driver subscribes to the OpenDTU MQTT base topic:
 
 ```text
-solar/+/0/+
-solar/+/name
+solar/#
 ```
 
 Only topics where the second path segment is a long numeric inverter serial number are accepted. OpenDTU helper topics such as `powerlimiter`, `ac`, `dc`, `dtu`, `device`, `status`, and `radio` are ignored.
@@ -30,6 +29,8 @@ com.victronenergy.pvinverter.mqtt_<serial>
 ```
 
 The OpenDTU `name` topic is passed to Venus OS as the D-Bus `/CustomName`, so the inverter appears with its configured OpenDTU name instead of only the serial number.
+
+A Venus OS device is created only after the driver has received at least one channel `0` metric for that inverter. A retained `name` topic alone will not create a disconnected placeholder device.
 
 If an inverter stops publishing for the internal timeout period, its D-Bus service is removed again.
 
@@ -90,6 +91,40 @@ base_topic = solar
 ```
 
 Only the MQTT broker connection and the OpenDTU base topic are configured manually. Inverter IDs, D-Bus service names, display names, and device instances are derived automatically at runtime.
+
+## Start, Restart, Status, Logs
+
+The installer registers the driver as a Venus OS daemon-tools service:
+
+```text
+/service/dbus-mqtt-opendtu
+```
+
+After editing `config.ini`, restart the driver:
+
+```sh
+bash /data/etc/dbus-mqtt-opendtu/restart.sh
+```
+
+You can also control the service directly:
+
+```sh
+svc -u /service/dbus-mqtt-opendtu
+svc -t /service/dbus-mqtt-opendtu
+svc -d /service/dbus-mqtt-opendtu
+```
+
+Check whether the service is running:
+
+```sh
+svstat /service/dbus-mqtt-opendtu
+```
+
+Show the live log:
+
+```sh
+tail -n 100 -F /var/log/dbus-mqtt-opendtu/current | tai64nlocal
+```
 
 ## How The Limit Feedback Works
 
