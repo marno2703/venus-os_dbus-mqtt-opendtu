@@ -13,6 +13,7 @@
 - Added `/data/etc/dbus-mqtt-opendtu/runtime_state.json` for MQTT topic and D-Bus discovery diagnostics.
 - Changed startup behavior so retained `name` topics alone do not create disconnected placeholder devices.
 - Changed inverter service creation to require a channel `0` `power` metric.
+- Changed each inverter service to use its own private D-Bus connection, allowing multiple services in one process.
 - Changed D-Bus device instance allocation to skip already used Venus OS instances and persist serial-to-instance mappings.
 - Changed installation to stop and remove the legacy `dbus-mqtt-pv` service during migration.
 - Changed updates to stop the existing `dbus-mqtt-opendtu` service before replacing files.

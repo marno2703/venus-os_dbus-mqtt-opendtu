@@ -237,8 +237,10 @@ class OpenDtuInverterService:
         self.last_seen = int(time())
         self.name = None
         self.power = 0.0
+        self._dbusconn = dbus.SystemBus(private=True)
         self._dbusservice = VeDbusService(
             service_name_for_serial(serial),
+            bus=self._dbusconn,
             register=False,
         )
 
@@ -329,6 +331,10 @@ class OpenDtuInverterService:
         logging.info("Removing D-Bus service for inactive OpenDTU inverter %s", self.serial)
         self._dbusservice["/Connected"] = 0
         self._dbusservice.__del__()
+        try:
+            self._dbusconn.close()
+        except Exception:
+            pass
 
     def _handle_max_power_changed(self, path, value):
         try:
