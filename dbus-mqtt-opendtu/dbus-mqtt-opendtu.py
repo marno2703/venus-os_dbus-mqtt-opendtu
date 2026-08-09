@@ -84,6 +84,10 @@ def command_topic(serial):
     return "%s/%s/cmd/limit_nonpersistent_absolute" % (base_topic(), serial)
 
 
+def relative_command_topic(serial):
+    return "%s/%s/cmd/limit_nonpersistent_relative" % (base_topic(), serial)
+
+
 def minimum_limit_watts():
     value = config.getint("DRIVER", "minimum_limit_watts", fallback=DEFAULT_MINIMUM_LIMIT_WATTS)
     return max(0, value)
@@ -109,6 +113,10 @@ def is_own_service_name(service_name):
 
 def device_instance_map_file():
     return os.path.join(os.path.dirname(os.path.realpath(__file__)), "device_instances.json")
+
+
+def max_power_map_file():
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), "max_powers.json")
 
 
 def runtime_state_file():
@@ -145,6 +153,37 @@ def save_device_instance_map(instances):
             handle.write("\n")
     except Exception as err:
         logging.warning("Could not write device instance map %s: %s", path, err)
+
+
+def load_max_power_map():
+    path = max_power_map_file()
+    if not os.path.exists(path):
+        return {}
+
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except Exception as err:
+        logging.warning("Could not read max power map %s: %s", path, err)
+        return {}
+
+    max_powers = {}
+    for serial, value in data.items():
+        if not INVERTER_SERIAL_RE.match(serial):
+            continue
+        try:
+            max_power = int(float(value))
+        except (TypeError, ValueError):
+            logging.warning("Ignoring invalid stored max power for %s: %s", serial, value)
+            continue
+        if max_power > 0:
+            max_powers[serial] = max_power
+
+    return max_powers
+
+
+def save_max_power_map(max_powers):
+    write_json_file(max_power_map_file(), max_powers)
 
 
 def write_json_file(path, data):
@@ -257,11 +296,12 @@ def parse_text_payload(payload):
 
 
 class OpenDtuInverterService:
-    def __init__(self, serial, deviceinstance):
+    def __init__(self, serial, deviceinstance, max_power=None):
         self.serial = serial
         self.last_seen = int(time())
         self.name = None
         self.power = 0.0
+        self.max_power = max_power
         self._dbusconn = dbus.SystemBus(private=True)
         self._dbusservice = VeDbusService(
             service_name_for_serial(serial),
@@ -295,10 +335,10 @@ class OpenDtuInverterService:
         self._dbusservice.add_path("/Ac/Current", None, gettextcallback=text_a)
         self._dbusservice.add_path("/Ac/Voltage", None, gettextcallback=text_v)
         self._dbusservice.add_path("/Ac/Energy/Forward", None, gettextcallback=text_kwh)
-        self._dbusservice.add_path("/Ac/MaxPower", DEFAULT_MAX_POWER, gettextcallback=text_w)
+        self._dbusservice.add_path("/Ac/MaxPower", self._max_power_value(), gettextcallback=text_w)
         self._dbusservice.add_path(
             "/Ac/PowerLimit",
-            DEFAULT_MAX_POWER,
+            self._max_power_value(),
             gettextcallback=text_w,
             writeable=True,
             onchangecallback=self._handle_limit_changed,
@@ -315,6 +355,13 @@ class OpenDtuInverterService:
 
         self._dbusservice.register()
         logging.info("Created D-Bus service for OpenDTU inverter %s with DeviceInstance %s", serial, deviceinstance)
+        if self.max_power is None:
+            logging.info("OpenDTU inverter %s max power is unknown; ESS limits will be ignored until learned", serial)
+        else:
+            logging.info("OpenDTU inverter %s max power is %sW", serial, self.max_power)
+
+    def _max_power_value(self):
+        return self.max_power if self.max_power is not None else DEFAULT_MAX_POWER
 
     def update_metric(self, metric, value):
         self.last_seen = int(time())
@@ -354,6 +401,20 @@ class OpenDtuInverterService:
         self._dbusservice["/Mgmt/Connection"] = "OpenDTU MQTT %s (%s)" % (self.serial, name)
         logging.info("Updated OpenDTU inverter %s name to %s", self.serial, name)
 
+    def set_max_power(self, max_power):
+        max_power = int(max_power)
+        if max_power <= 0 or max_power == self.max_power:
+            return
+
+        self.max_power = max_power
+        self._dbusservice["/Ac/MaxPower"] = max_power
+        self._dbusservice["/Ac/PowerLimit"] = max_power
+        logging.info("Learned OpenDTU inverter %s max power: %sW", self.serial, max_power)
+
+    def _set_power_limit_value(self, value):
+        self._dbusservice["/Ac/PowerLimit"] = int(value)
+        return False
+
     def close(self):
         logging.info("Removing D-Bus service for inactive OpenDTU inverter %s", self.serial)
         self._dbusservice["/Connected"] = 0
@@ -366,8 +427,20 @@ class OpenDtuInverterService:
     def _handle_limit_changed(self, path, value):
         logging.info("Received D-Bus limit write for inverter %s: %s=%s", self.serial, path, value)
         try:
+            if self.max_power is None:
+                logging.warning(
+                    "Ignoring ESS limit for inverter %s because max power is not learned yet: %s=%s",
+                    self.serial,
+                    path,
+                    value,
+                )
+                if manager is not None:
+                    manager.record_limit_event(self.serial, path, value, None, None, "max_power_unknown")
+                GLib.idle_add(self._set_power_limit_value, self._max_power_value())
+                return True
+
             requested_limit = max(0, int(float(value)))
-            limit = max(requested_limit, minimum_limit_watts())
+            limit = min(max(requested_limit, minimum_limit_watts()), self.max_power)
             payload = str(limit)
             topic = command_topic(self.serial)
             result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
@@ -383,6 +456,7 @@ class OpenDtuInverterService:
                 logging.error("Failed to queue OpenDTU limit for %s to %s: rc=%s payload=%s", self.serial, topic, result.rc, payload)
             if manager is not None:
                 manager.record_limit_event(self.serial, path, value, topic, payload, result.rc)
+            GLib.idle_add(self._set_power_limit_value, limit)
             return True
         except Exception:
             exception_type, exception_object, exception_traceback = sys.exc_info()
@@ -397,6 +471,10 @@ class OpenDtuManager:
         self.inverters = {}
         self.device_instances = load_device_instance_map()
         self.used_device_instances = used_device_instances()
+        self.max_powers = load_max_power_map()
+        self.max_power_bootstrap_requested_at = {}
+        self.limit_status = {}
+        self.limit_status_seen_at = {}
         self.names = {}
         self.pending_metrics = {}
         self.seen_topics = []
@@ -412,7 +490,7 @@ class OpenDtuManager:
                 self.write_runtime_state()
                 return False
 
-            service = OpenDtuInverterService(serial, self._device_instance_for(serial))
+            service = OpenDtuInverterService(serial, self._device_instance_for(serial), self.max_powers.get(serial))
             self.inverters[serial] = service
             if serial in self.names:
                 service.update_name(self.names[serial])
@@ -421,8 +499,17 @@ class OpenDtuManager:
             for pending_metric, pending_value in self.pending_metrics.pop(serial, {}).items():
                 if pending_metric != metric:
                     service.update_metric(pending_metric, pending_value)
+            self._learn_or_request_max_power(serial)
 
         service.update_metric(metric, value)
+        self.write_runtime_state()
+        return False
+
+    def handle_limit_status_message(self, serial, metric, value):
+        self.limit_status.setdefault(serial, {})[metric] = value
+        self.limit_status_seen_at.setdefault(serial, {})[metric] = time()
+        logging.debug("Received OpenDTU inverter %s %s=%s", serial, metric, value)
+        self._learn_or_request_max_power(serial)
         self.write_runtime_state()
         return False
 
@@ -461,6 +548,49 @@ class OpenDtuManager:
         del self.limit_events[:-MAX_RECORDED_TOPICS]
         self.write_runtime_state()
 
+    def _learn_or_request_max_power(self, serial):
+        service = self.inverters.get(serial)
+        if service is None or serial in self.max_powers:
+            return
+
+        status = self.limit_status.get(serial, {})
+        try:
+            relative = float(status.get("limit_relative"))
+        except (TypeError, ValueError):
+            relative = None
+
+        try:
+            absolute = int(round(float(status.get("limit_absolute"))))
+        except (TypeError, ValueError):
+            absolute = None
+
+        absolute_is_current = True
+        if serial in self.max_power_bootstrap_requested_at:
+            absolute_is_current = (
+                self.limit_status_seen_at.get(serial, {}).get("limit_absolute", 0)
+                >= self.max_power_bootstrap_requested_at[serial]
+            )
+
+        if relative is not None and relative >= 99.9 and absolute is not None and absolute > 0 and absolute_is_current:
+            self.max_powers[serial] = absolute
+            save_max_power_map(self.max_powers)
+            service.set_max_power(absolute)
+            return
+
+        self._request_max_power_bootstrap(serial)
+
+    def _request_max_power_bootstrap(self, serial):
+        if serial in self.max_power_bootstrap_requested_at:
+            return
+
+        topic = relative_command_topic(serial)
+        result = mqtt_client.publish(topic, payload="100", qos=0, retain=False)
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            self.max_power_bootstrap_requested_at[serial] = time()
+            logging.info("Requested OpenDTU 100%% limit for inverter %s to learn max power", serial)
+        else:
+            logging.error("Failed to request OpenDTU 100%% limit for inverter %s: rc=%s", serial, result.rc)
+
     def write_runtime_state(self):
         state = {
             "base_topic": base_topic(),
@@ -480,6 +610,9 @@ class OpenDtuManager:
                 "custom_name": json_safe_value(service._dbusservice["/CustomName"]),
                 "connected": json_safe_value(service._dbusservice["/Connected"]),
                 "power": json_safe_value(service._dbusservice["/Ac/Power"]),
+                "max_power": json_safe_value(service.max_power),
+                "limit_status": self.limit_status.get(serial, {}),
+                "max_power_bootstrap_requested_at": json_safe_value(self.max_power_bootstrap_requested_at.get(serial)),
                 "last_seen": service.last_seen,
             }
 
@@ -540,6 +673,9 @@ def parse_opendtu_topic(topic):
     if len(remaining) == 3 and remaining[1] == "0":
         return serial, remaining[2]
 
+    if len(remaining) == 3 and remaining[1] == "status" and remaining[2] in ("limit_relative", "limit_absolute"):
+        return serial, remaining[2]
+
     return None
 
 
@@ -568,6 +704,8 @@ def on_message(client, userdata, msg):
         serial, metric = parsed_topic
         if metric == "name":
             GLib.idle_add(manager.handle_name_message, serial, parse_text_payload(msg.payload))
+        elif metric in ("limit_relative", "limit_absolute"):
+            GLib.idle_add(manager.handle_limit_status_message, serial, metric, parse_float_payload(msg.payload))
         elif metric in ("power", "current", "voltage", "frequency", "powerfactor", "yieldtotal"):
             GLib.idle_add(manager.handle_metric_message, serial, metric, parse_float_payload(msg.payload))
     except Exception:

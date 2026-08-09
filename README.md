@@ -108,6 +108,14 @@ Device instances are assigned automatically from `100` upward. The driver scans 
 
 This keeps each inverter on the same DeviceInstance after a driver restart.
 
+Inverter maximum AC power is learned from OpenDTU and stored in:
+
+```text
+/data/etc/dbus-mqtt-opendtu/max_powers.json
+```
+
+When a new inverter has no stored max power yet, the driver first requests `100%` via `cmd/limit_nonpersistent_relative`, waits until OpenDTU reports `status/limit_relative = 100`, and then stores `status/limit_absolute` as the inverter's `/Ac/MaxPower`. Until this is known, ESS limit writes are logged but not forwarded to OpenDTU.
+
 Set `debug = 1` to enable verbose diagnostics for MQTT topic parsing, D-Bus updates, and limit writes. Restart the driver after changing this value.
 
 `minimum_limit_watts` is a small safety floor for limits sent to OpenDTU. It prevents Hoymiles inverters from being commanded to an exact `0 W` limit, which can make some units slow or unreliable to wake up again. Set it to `0` to forward Victron's requested value unchanged.
@@ -201,4 +209,4 @@ Payload format:
 
 The limit is non-persistent, so it is suitable for dynamic zero-feed-in control.
 
-If Victron requests `0 W` and `minimum_limit_watts = 5`, the driver sends `5` to OpenDTU instead.
+The forwarded value is clamped to the learned inverter range. If Victron requests `0 W` and `minimum_limit_watts = 5`, the driver sends `5` to OpenDTU instead. If Victron requests more than the learned maximum inverter power, the driver sends the learned maximum.

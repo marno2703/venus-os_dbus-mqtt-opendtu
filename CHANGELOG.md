@@ -8,10 +8,13 @@
 - Added explicit D-Bus `/Serial` values per inverter.
 - Added direct ESS limit feedback to `<base_topic>/<serial>/cmd/limit_nonpersistent_absolute` with a raw numeric payload.
 - Added Fronius-compatible PV inverter D-Bus service names and `/FroniusDeviceType` for Victron ESS feed-in limiting.
+- Added OpenDTU max-power learning from `status/limit_relative = 100` and `status/limit_absolute`.
+- Added upper and lower limit clamping before publishing limits to OpenDTU.
 - Added filtering so only long numeric inverter serial numbers are accepted.
 - Added OpenDTU `name` forwarding to the Venus OS D-Bus `/CustomName`.
 - Added discovery logs for inverter serial numbers and assigned DeviceInstance values.
 - Added `/data/etc/dbus-mqtt-opendtu/runtime_state.json` for MQTT topic and D-Bus discovery diagnostics.
+- Added `/data/etc/dbus-mqtt-opendtu/max_powers.json` for learned inverter max-power persistence.
 - Added configurable debug logging via `[DRIVER] debug = 1`.
 - Added explicit logs and runtime-state events for Victron `/Ac/PowerLimit` limit writes and OpenDTU limit publishes.
 - Changed startup behavior so retained `name` topics alone do not create disconnected placeholder devices.
