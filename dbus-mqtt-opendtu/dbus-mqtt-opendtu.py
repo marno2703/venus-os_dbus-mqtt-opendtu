@@ -28,6 +28,7 @@ DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
 DEFAULT_MAX_POWER = 100000
 DEFAULT_MINIMUM_LIMIT_WATTS = 5
+STATUS_RUNNING = 7
 FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
 MAX_RECORDED_TOPICS = 50
@@ -328,7 +329,7 @@ class OpenDtuInverterService:
         self._dbusservice.add_path("/Latency", None)
         self._dbusservice.add_path("/ErrorCode", 0)
         self._dbusservice.add_path("/Position", DEFAULT_POSITION)
-        self._dbusservice.add_path("/StatusCode", 8)
+        self._dbusservice.add_path("/StatusCode", STATUS_RUNNING)
         self._dbusservice.add_path("/UpdateIndex", 0, gettextcallback=text_n)
 
         self._dbusservice.add_path("/Ac/Power", 0, gettextcallback=text_w)
@@ -344,7 +345,7 @@ class OpenDtuInverterService:
             onchangecallback=self._handle_limit_changed,
         )
         self._dbusservice.add_path("/Ac/Position", DEFAULT_POSITION, gettextcallback=text_n)
-        self._dbusservice.add_path("/Ac/StatusCode", 8, gettextcallback=text_n)
+        self._dbusservice.add_path("/Ac/StatusCode", STATUS_RUNNING, gettextcallback=text_n)
 
         self._dbusservice.add_path("/Ac/L1/Power", 0, gettextcallback=text_w)
         self._dbusservice.add_path("/Ac/L1/Current", None, gettextcallback=text_a)
@@ -373,9 +374,8 @@ class OpenDtuInverterService:
             self._dbusservice["/Ac/Power"] = self.power
             self._dbusservice["/Ac/L1/Power"] = self.power
 
-            status = 7 if self.power >= 10 else 8
-            self._dbusservice["/StatusCode"] = status
-            self._dbusservice["/Ac/StatusCode"] = status
+            self._dbusservice["/StatusCode"] = STATUS_RUNNING
+            self._dbusservice["/Ac/StatusCode"] = STATUS_RUNNING
         elif metric == "current":
             self._dbusservice["/Ac/Current"] = round(value, 2)
             self._dbusservice["/Ac/L1/Current"] = round(value, 2)

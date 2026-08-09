@@ -21,6 +21,7 @@
 - Changed inverter service creation to require a channel `0` `power` metric.
 - Changed each inverter service to use its own private D-Bus connection, allowing multiple services in one process.
 - Changed D-Bus device instance allocation to skip already used Venus OS instances and persist serial-to-instance mappings.
+- Changed reachable OpenDTU inverters to stay in running status even when ESS has curtailed power to near zero.
 - Changed installation to stop and remove the legacy `dbus-mqtt-pv` service during migration.
 - Changed updates to stop the existing `dbus-mqtt-opendtu` service before replacing files.
 - Removed manual instances, generic MQTT payload handling, fixed topic configuration, and non-OpenDTU device support.
