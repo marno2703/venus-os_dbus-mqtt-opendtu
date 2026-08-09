@@ -168,8 +168,12 @@ def load_max_power_map():
         logging.warning("Could not read max power map %s: %s", path, err)
         return {}
 
+    if data.get("version") != 2 or not isinstance(data.get("max_powers"), dict):
+        logging.warning("Ignoring legacy max power map %s; max power will be relearned", path)
+        return {}
+
     max_powers = {}
-    for serial, value in data.items():
+    for serial, value in data["max_powers"].items():
         if not INVERTER_SERIAL_RE.match(serial):
             continue
         try:
@@ -184,7 +188,7 @@ def load_max_power_map():
 
 
 def save_max_power_map(max_powers):
-    write_json_file(max_power_map_file(), max_powers)
+    write_json_file(max_power_map_file(), {"version": 2, "max_powers": max_powers})
 
 
 def write_json_file(path, data):
@@ -403,26 +407,15 @@ class OpenDtuInverterService:
 
     def set_max_power(self, max_power):
         max_power = int(max_power)
-        if max_power <= 0 or max_power == self.max_power:
+        if max_power <= 0:
+            return
+        if max_power == self.max_power:
             return
 
         self.max_power = max_power
         self._dbusservice["/Ac/MaxPower"] = max_power
         self._dbusservice["/Ac/PowerLimit"] = max_power
-        logging.info("Learned OpenDTU inverter %s max power: %sW", self.serial, max_power)
-        self.release_to_max_power()
-
-    def release_to_max_power(self):
-        if self.max_power is None:
-            return
-
-        payload = str(int(self.max_power))
-        topic = command_topic(self.serial)
-        result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
-        if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            logging.info("Released OpenDTU inverter %s to learned max power via %s: %s", self.serial, topic, payload)
-        else:
-            logging.error("Failed to release OpenDTU inverter %s to learned max power via %s: rc=%s", self.serial, topic, result.rc)
+        logging.info("Learned OpenDTU inverter %s max power: %sW; ESS write lock removed", self.serial, max_power)
 
     def _set_power_limit_value(self, value):
         self._dbusservice["/Ac/PowerLimit"] = int(value)
@@ -459,11 +452,13 @@ class OpenDtuInverterService:
             result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 logging.info(
-                    "Published OpenDTU limit for %s to %s: %s (requested %s)",
+                    "Published OpenDTU limit for %s to %s: %s (requested %s, min %s, max %s)",
                     self.serial,
                     topic,
                     payload,
                     requested_limit,
+                    minimum_limit_watts(),
+                    self.max_power,
                 )
             else:
                 logging.error("Failed to queue OpenDTU limit for %s to %s: rc=%s payload=%s", self.serial, topic, result.rc, payload)
@@ -577,14 +572,17 @@ class OpenDtuManager:
         except (TypeError, ValueError):
             absolute = None
 
-        absolute_is_current = True
-        if serial in self.max_power_bootstrap_requested_at:
-            absolute_is_current = (
-                self.limit_status_seen_at.get(serial, {}).get("limit_absolute", 0)
-                >= self.max_power_bootstrap_requested_at[serial]
-            )
+        seen_at = self.limit_status_seen_at.get(serial, {})
+        bootstrap_at = self.max_power_bootstrap_requested_at.get(serial)
+        relative_seen_at = seen_at.get("limit_relative", 0)
+        absolute_seen_at = seen_at.get("limit_absolute", 0)
 
-        if relative is not None and relative >= 99.9 and absolute is not None and absolute > 0 and absolute_is_current:
+        if bootstrap_at is not None and relative_seen_at < bootstrap_at:
+            self.write_runtime_state()
+            return
+
+        absolute_seen_after_relative = absolute_seen_at >= relative_seen_at
+        if relative is not None and relative >= 99.9 and absolute is not None and absolute > 0 and absolute_seen_after_relative:
             self.max_powers[serial] = absolute
             save_max_power_map(self.max_powers)
             service.set_max_power(absolute)
