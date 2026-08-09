@@ -114,7 +114,7 @@ Inverter maximum AC power is learned from OpenDTU and stored in:
 /data/etc/dbus-mqtt-opendtu/max_powers.json
 ```
 
-When a new inverter has no stored max power yet, the driver first requests `100%` via `cmd/limit_nonpersistent_relative`, waits until OpenDTU reports `status/limit_relative = 100`, and then stores `status/limit_absolute` as the inverter's `/Ac/MaxPower`. Until this is known, ESS limit writes are logged but not forwarded to OpenDTU.
+When a new inverter has no stored max power yet, the driver first requests `100%` via `cmd/limit_nonpersistent_relative`, waits until OpenDTU reports `status/limit_relative = 100`, and then stores `status/limit_absolute` as the inverter's `/Ac/MaxPower`. As soon as one inverter's max power is learned, that inverter is released to its learned max power and can accept ESS limits; other inverters continue learning independently.
 
 Set `debug = 1` to enable verbose diagnostics for MQTT topic parsing, D-Bus updates, and limit writes. Restart the driver after changing this value.
 

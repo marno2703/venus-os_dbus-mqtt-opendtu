@@ -410,6 +410,19 @@ class OpenDtuInverterService:
         self._dbusservice["/Ac/MaxPower"] = max_power
         self._dbusservice["/Ac/PowerLimit"] = max_power
         logging.info("Learned OpenDTU inverter %s max power: %sW", self.serial, max_power)
+        self.release_to_max_power()
+
+    def release_to_max_power(self):
+        if self.max_power is None:
+            return
+
+        payload = str(int(self.max_power))
+        topic = command_topic(self.serial)
+        result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logging.info("Released OpenDTU inverter %s to learned max power via %s: %s", self.serial, topic, payload)
+        else:
+            logging.error("Failed to release OpenDTU inverter %s to learned max power via %s: rc=%s", self.serial, topic, result.rc)
 
     def _set_power_limit_value(self, value):
         self._dbusservice["/Ac/PowerLimit"] = int(value)
