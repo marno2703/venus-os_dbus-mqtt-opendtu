@@ -27,6 +27,7 @@ DEFAULT_BASE_TOPIC = "solar"
 DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
 DEFAULT_MAX_POWER = 100000
+DEFAULT_MINIMUM_LIMIT_WATTS = 5
 FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
 MAX_RECORDED_TOPICS = 50
@@ -81,6 +82,11 @@ def opendtu_topic():
 
 def command_topic(serial):
     return "%s/%s/cmd/limit_nonpersistent_absolute" % (base_topic(), serial)
+
+
+def minimum_limit_watts():
+    value = config.getint("DRIVER", "minimum_limit_watts", fallback=DEFAULT_MINIMUM_LIMIT_WATTS)
+    return max(0, value)
 
 
 def sanitize_service_suffix(value):
@@ -360,12 +366,19 @@ class OpenDtuInverterService:
     def _handle_limit_changed(self, path, value):
         logging.info("Received D-Bus limit write for inverter %s: %s=%s", self.serial, path, value)
         try:
-            limit = max(0, int(float(value)))
+            requested_limit = max(0, int(float(value)))
+            limit = max(requested_limit, minimum_limit_watts())
             payload = str(limit)
             topic = command_topic(self.serial)
             result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logging.info("Published OpenDTU limit for %s to %s: %s", self.serial, topic, payload)
+                logging.info(
+                    "Published OpenDTU limit for %s to %s: %s (requested %s)",
+                    self.serial,
+                    topic,
+                    payload,
+                    requested_limit,
+                )
             else:
                 logging.error("Failed to queue OpenDTU limit for %s to %s: rc=%s payload=%s", self.serial, topic, result.rc, payload)
             if manager is not None:

@@ -89,6 +89,7 @@ base_topic = solar
 
 [DRIVER]
 debug = 0
+minimum_limit_watts = 5
 ```
 
 Use the MQTT root topic configured in OpenDTU. For the common OpenDTU layout shown above, set:
@@ -108,6 +109,8 @@ Device instances are assigned automatically from `100` upward. The driver scans 
 This keeps each inverter on the same DeviceInstance after a driver restart.
 
 Set `debug = 1` to enable verbose diagnostics for MQTT topic parsing, D-Bus updates, and limit writes. Restart the driver after changing this value.
+
+`minimum_limit_watts` is a small safety floor for limits sent to OpenDTU. It prevents Hoymiles inverters from being commanded to an exact `0 W` limit, which can make some units slow or unreliable to wake up again. Set it to `0` to forward Victron's requested value unchanged.
 
 ## Start, Restart, Status, Logs
 
@@ -147,7 +150,7 @@ When Victron writes a limit to `/Ac/PowerLimit`, the log shows:
 
 ```text
 Received D-Bus limit write for inverter <serial>: /Ac/PowerLimit=250
-Published OpenDTU limit for <serial> to solar/<serial>/cmd/limit_nonpersistent_absolute: 250
+Published OpenDTU limit for <serial> to solar/<serial>/cmd/limit_nonpersistent_absolute: 250 (requested 250)
 ```
 
 To check only limit-related log lines:
@@ -197,3 +200,5 @@ Payload format:
 ```
 
 The limit is non-persistent, so it is suitable for dynamic zero-feed-in control.
+
+If Victron requests `0 W` and `minimum_limit_watts = 5`, the driver sends `5` to OpenDTU instead.
