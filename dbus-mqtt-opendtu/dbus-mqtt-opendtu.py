@@ -336,11 +336,6 @@ class OpenDtuInverterService:
         elif metric == "yieldtotal":
             self._dbusservice["/Ac/Energy/Forward"] = round(value, 3)
             self._dbusservice["/Ac/L1/Energy/Forward"] = round(value, 3)
-        elif metric == "limit_absolute":
-            limit = max(0, int(round(value)))
-            self._dbusservice["/Ac/MaxPower"] = limit
-            self._dbusservice["/Ac/PowerLimit"] = limit
-
         index = self._dbusservice["/UpdateIndex"] + 1
         self._dbusservice["/UpdateIndex"] = 0 if index > 255 else index
 
@@ -532,9 +527,6 @@ def parse_opendtu_topic(topic):
     if len(remaining) == 3 and remaining[1] == "0":
         return serial, remaining[2]
 
-    if len(remaining) == 3 and remaining[1] == "status" and remaining[2] == "limit_absolute":
-        return serial, "limit_absolute"
-
     return None
 
 
@@ -563,7 +555,7 @@ def on_message(client, userdata, msg):
         serial, metric = parsed_topic
         if metric == "name":
             GLib.idle_add(manager.handle_name_message, serial, parse_text_payload(msg.payload))
-        elif metric in ("power", "current", "voltage", "frequency", "powerfactor", "yieldtotal", "limit_absolute"):
+        elif metric in ("power", "current", "voltage", "frequency", "powerfactor", "yieldtotal"):
             GLib.idle_add(manager.handle_metric_message, serial, metric, parse_float_payload(msg.payload))
     except Exception:
         exception_type, exception_object, exception_traceback = sys.exc_info()
