@@ -11,6 +11,7 @@
 - Added OpenDTU max-power learning from `status/limit_relative = 100` and `status/limit_absolute`.
 - Added upper and lower limit clamping before publishing limits to OpenDTU.
 - Added a per-inverter ESS write lock until OpenDTU max power has been learned.
+- Added a per-inverter OpenDTU limit confirmation lock and timeout retry.
 - Added filtering so only long numeric inverter serial numbers are accepted.
 - Added OpenDTU `name` forwarding to the Venus OS D-Bus `/CustomName`.
 - Added discovery logs for inverter serial numbers and assigned DeviceInstance values.

@@ -28,6 +28,7 @@ DEFAULT_INVERTER_TIMEOUT = 300
 DEFAULT_POSITION = 0
 DEFAULT_MAX_POWER = 100000
 DEFAULT_MINIMUM_LIMIT_WATTS = 5
+DEFAULT_LIMIT_CONFIRM_TIMEOUT = 180
 STATUS_RUNNING = 7
 FIRST_DEVICE_INSTANCE = 100
 INVERTER_SERIAL_RE = re.compile(r"^\d{8,}$")
@@ -92,6 +93,11 @@ def relative_command_topic(serial):
 def minimum_limit_watts():
     value = config.getint("DRIVER", "minimum_limit_watts", fallback=DEFAULT_MINIMUM_LIMIT_WATTS)
     return max(0, value)
+
+
+def limit_confirm_timeout():
+    value = config.getint("DRIVER", "limit_confirm_timeout_seconds", fallback=DEFAULT_LIMIT_CONFIRM_TIMEOUT)
+    return max(1, value)
 
 
 def sanitize_service_suffix(value):
@@ -307,6 +313,11 @@ class OpenDtuInverterService:
         self.name = None
         self.power = 0.0
         self.max_power = max_power
+        self.limit_lock = False
+        self.limit_sent_value = None
+        self.limit_sent_at = None
+        self.latest_requested_limit = None
+        self.deferred_requested_limit = None
         self._dbusconn = dbus.SystemBus(private=True)
         self._dbusservice = VeDbusService(
             service_name_for_serial(serial),
@@ -446,32 +457,128 @@ class OpenDtuInverterService:
                 return True
 
             requested_limit = max(0, int(float(value)))
-            limit = min(max(requested_limit, minimum_limit_watts()), self.max_power)
-            payload = str(limit)
-            topic = command_topic(self.serial)
-            result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
-            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            self.latest_requested_limit = requested_limit
+            if self.limit_lock:
+                self.deferred_requested_limit = requested_limit
                 logging.info(
-                    "Published OpenDTU limit for %s to %s: %s (requested %s, min %s, max %s)",
+                    "Deferring OpenDTU limit for %s while waiting for confirmation: requested %s, pending %s",
                     self.serial,
-                    topic,
-                    payload,
                     requested_limit,
-                    minimum_limit_watts(),
-                    self.max_power,
+                    self.limit_sent_value,
                 )
-            else:
-                logging.error("Failed to queue OpenDTU limit for %s to %s: rc=%s payload=%s", self.serial, topic, result.rc, payload)
-            if manager is not None:
-                manager.record_limit_event(self.serial, path, value, topic, payload, result.rc)
-            GLib.idle_add(self._set_power_limit_value, limit)
-            return True
+                if manager is not None:
+                    manager.record_limit_event(self.serial, path, value, None, None, "limit_confirmation_pending")
+                return True
+
+            result = self._publish_limit(requested_limit, path, value)
+            if result is not None:
+                GLib.idle_add(self._set_power_limit_value, result)
+                return True
+            return False
         except Exception:
             exception_type, exception_object, exception_traceback = sys.exc_info()
             file = exception_traceback.tb_frame.f_code.co_filename
             line = exception_traceback.tb_lineno
             logging.error("Failed to publish OpenDTU limit: %r of type %s in %s line #%s", exception_object, exception_type, file, line)
             return False
+
+    def _publish_limit(self, requested_limit, dbus_path=None, dbus_value=None):
+        limit = min(max(requested_limit, minimum_limit_watts()), self.max_power)
+        payload = str(limit)
+        topic = command_topic(self.serial)
+        result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            self.limit_lock = True
+            self.limit_sent_value = limit
+            self.limit_sent_at = time()
+            self.deferred_requested_limit = None
+            logging.info(
+                "Published OpenDTU limit for %s to %s: %s (requested %s, min %s, max %s); waiting for status confirmation",
+                self.serial,
+                topic,
+                payload,
+                requested_limit,
+                minimum_limit_watts(),
+                self.max_power,
+            )
+        else:
+            logging.error("Failed to queue OpenDTU limit for %s to %s: rc=%s payload=%s", self.serial, topic, result.rc, payload)
+
+        if manager is not None:
+            manager.record_limit_event(
+                self.serial,
+                dbus_path,
+                dbus_value if dbus_value is not None else requested_limit,
+                topic,
+                payload,
+                result.rc,
+            )
+
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            return limit
+        return None
+
+    def handle_limit_absolute_status(self, value):
+        if not self.limit_lock or self.limit_sent_value is None:
+            return
+
+        actual = int(round(float(value)))
+        if actual != self.limit_sent_value:
+            logging.debug(
+                "OpenDTU limit for %s not confirmed yet: actual %s, expected %s",
+                self.serial,
+                actual,
+                self.limit_sent_value,
+            )
+            return
+
+        logging.info("OpenDTU limit for %s confirmed: %s", self.serial, actual)
+        self.limit_lock = False
+        self.limit_sent_value = None
+        self.limit_sent_at = None
+
+        if self.deferred_requested_limit is None:
+            return
+
+        requested_limit = self.deferred_requested_limit
+        self.deferred_requested_limit = None
+        current_target = min(max(requested_limit, minimum_limit_watts()), self.max_power)
+        if current_target == actual:
+            GLib.idle_add(self._set_power_limit_value, current_target)
+            return
+
+        logging.info("Sending deferred OpenDTU limit for %s after confirmation: requested %s", self.serial, requested_limit)
+        result = self._publish_limit(requested_limit)
+        if result is not None:
+            GLib.idle_add(self._set_power_limit_value, result)
+
+    def retry_limit_if_timed_out(self):
+        if not self.limit_lock or self.limit_sent_at is None:
+            return
+
+        age = time() - self.limit_sent_at
+        if age < limit_confirm_timeout():
+            return
+
+        requested_limit = self.deferred_requested_limit
+        if requested_limit is None:
+            requested_limit = self.latest_requested_limit
+        if requested_limit is None:
+            requested_limit = self.limit_sent_value
+
+        logging.warning(
+            "OpenDTU limit confirmation timeout for %s after %.0fs; resending current requested limit %s",
+            self.serial,
+            age,
+            requested_limit,
+        )
+        self.limit_lock = False
+        self.limit_sent_value = None
+        self.limit_sent_at = None
+        self.deferred_requested_limit = None
+        result = self._publish_limit(requested_limit)
+        if result is not None:
+            GLib.idle_add(self._set_power_limit_value, result)
 
 
 class OpenDtuManager:
@@ -518,6 +625,9 @@ class OpenDtuManager:
         self.limit_status_seen_at.setdefault(serial, {})[metric] = time()
         logging.debug("Received OpenDTU inverter %s %s=%s", serial, metric, value)
         self._learn_or_request_max_power(serial)
+        service = self.inverters.get(serial)
+        if service is not None and metric == "limit_absolute":
+            service.handle_limit_absolute_status(value)
         self.write_runtime_state()
         return False
 
@@ -623,6 +733,11 @@ class OpenDtuManager:
                 "power": json_safe_value(service._dbusservice["/Ac/Power"]),
                 "max_power": json_safe_value(service.max_power),
                 "limit_status": self.limit_status.get(serial, {}),
+                "limit_lock": service.limit_lock,
+                "limit_sent_value": json_safe_value(service.limit_sent_value),
+                "limit_sent_at": json_safe_value(service.limit_sent_at),
+                "latest_requested_limit": json_safe_value(service.latest_requested_limit),
+                "deferred_requested_limit": json_safe_value(service.deferred_requested_limit),
                 "max_power_bootstrap_requested_at": json_safe_value(self.max_power_bootstrap_requested_at.get(serial)),
                 "last_seen": service.last_seen,
             }
@@ -643,6 +758,12 @@ class OpenDtuManager:
         for serial in inactive:
             self.inverters.pop(serial).close()
 
+        return True
+
+    def check_limit_timeouts(self):
+        for service in self.inverters.values():
+            service.retry_limit_if_timed_out()
+        self.write_runtime_state()
         return True
 
     def _device_instance_for(self, serial):
@@ -770,6 +891,7 @@ def main():
     mqtt_client.loop_start()
 
     GLib.timeout_add_seconds(10, manager.cleanup_inactive)
+    GLib.timeout_add_seconds(10, manager.check_limit_timeouts)
 
     logging.info("Connected to D-Bus and switching over to GLib.MainLoop()")
     mainloop = GLib.MainLoop()

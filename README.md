@@ -90,6 +90,7 @@ base_topic = solar
 [DRIVER]
 debug = 0
 minimum_limit_watts = 5
+limit_confirm_timeout_seconds = 180
 ```
 
 Use the MQTT root topic configured in OpenDTU. For the common OpenDTU layout shown above, set:
@@ -119,6 +120,8 @@ When a new inverter has no stored max power yet, the driver enables a write lock
 Set `debug = 1` to enable verbose diagnostics for MQTT topic parsing, D-Bus updates, and limit writes. Restart the driver after changing this value.
 
 `minimum_limit_watts` is a small safety floor for limits sent to OpenDTU. It prevents Hoymiles inverters from being commanded to an exact `0 W` limit, which can make some units slow or unreliable to wake up again. Set it to `0` to forward Victron's requested value unchanged.
+
+`limit_confirm_timeout_seconds` controls how long the driver waits for OpenDTU to confirm a sent absolute limit via `status/limit_absolute`. While a limit is waiting for confirmation, newer ESS writes for the same inverter are not sent immediately; only the latest requested value is kept. On confirmation the lock is removed. On timeout the latest requested value is sent and the lock starts again.
 
 ## Start, Restart, Status, Logs
 
@@ -210,3 +213,5 @@ Payload format:
 The limit is non-persistent, so it is suitable for dynamic zero-feed-in control.
 
 The forwarded value is clamped to the learned inverter range. If Victron requests `0 W` and `minimum_limit_watts = 5`, the driver sends `5` to OpenDTU instead. If Victron requests more than the learned maximum inverter power, the driver sends the learned maximum.
+
+After every absolute limit publish, the driver waits until OpenDTU reports the same value on `status/limit_absolute` before sending another limit to that inverter. This prevents command flooding when ESS changes values faster than OpenDTU can verify them.
