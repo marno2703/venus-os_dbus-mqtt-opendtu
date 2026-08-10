@@ -215,3 +215,5 @@ The limit is non-persistent, so it is suitable for dynamic zero-feed-in control.
 The forwarded value is clamped to the learned inverter range. If Victron requests `0 W` and `minimum_limit_watts = 5`, the driver sends `5` to OpenDTU instead. If Victron requests more than the learned maximum inverter power, the driver sends the learned maximum.
 
 After every absolute limit publish, the driver waits until OpenDTU reports the same value on `status/limit_absolute` before sending another limit to that inverter. This prevents command flooding when ESS changes values faster than OpenDTU can verify them.
+
+If the calculated target already matches OpenDTU `status/limit_absolute`, the driver does not publish a command.

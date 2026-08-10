@@ -316,6 +316,7 @@ class OpenDtuInverterService:
         self.limit_lock = False
         self.limit_sent_value = None
         self.limit_sent_at = None
+        self.actual_limit_absolute = None
         self.latest_requested_limit = None
         self.deferred_requested_limit = None
         self._dbusconn = dbus.SystemBus(private=True)
@@ -484,6 +485,19 @@ class OpenDtuInverterService:
 
     def _publish_limit(self, requested_limit, dbus_path=None, dbus_value=None):
         limit = min(max(requested_limit, minimum_limit_watts()), self.max_power)
+        if self.actual_limit_absolute == limit:
+            logging.info("Skipping OpenDTU limit for %s because status already is %s", self.serial, limit)
+            if manager is not None:
+                manager.record_limit_event(
+                    self.serial,
+                    dbus_path,
+                    dbus_value if dbus_value is not None else requested_limit,
+                    None,
+                    None,
+                    "already_confirmed",
+                )
+            return limit
+
         payload = str(limit)
         topic = command_topic(self.serial)
         result = mqtt_client.publish(topic, payload=payload, qos=0, retain=False)
@@ -519,10 +533,11 @@ class OpenDtuInverterService:
         return None
 
     def handle_limit_absolute_status(self, value):
+        self.actual_limit_absolute = int(round(float(value)))
         if not self.limit_lock or self.limit_sent_value is None:
             return
 
-        actual = int(round(float(value)))
+        actual = self.actual_limit_absolute
         if actual != self.limit_sent_value:
             logging.debug(
                 "OpenDTU limit for %s not confirmed yet: actual %s, expected %s",
@@ -734,6 +749,7 @@ class OpenDtuManager:
                 "max_power": json_safe_value(service.max_power),
                 "limit_status": self.limit_status.get(serial, {}),
                 "limit_lock": service.limit_lock,
+                "actual_limit_absolute": json_safe_value(service.actual_limit_absolute),
                 "limit_sent_value": json_safe_value(service.limit_sent_value),
                 "limit_sent_at": json_safe_value(service.limit_sent_at),
                 "latest_requested_limit": json_safe_value(service.latest_requested_limit),
