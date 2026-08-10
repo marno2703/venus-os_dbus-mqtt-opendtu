@@ -89,7 +89,7 @@ base_topic = solar
 
 [DRIVER]
 debug = 0
-minimum_limit_watts = 5
+minimum_limit_watts = 50
 limit_confirm_timeout_seconds = 180
 ```
 
@@ -212,7 +212,7 @@ Payload format:
 
 The limit is non-persistent, so it is suitable for dynamic zero-feed-in control.
 
-The forwarded value is clamped to the learned inverter range. If Victron requests `0 W` and `minimum_limit_watts = 5`, the driver sends `5` to OpenDTU instead. If Victron requests more than the learned maximum inverter power, the driver sends the learned maximum.
+The forwarded value is clamped to the learned inverter range. If Victron requests `0 W` and `minimum_limit_watts = 50`, the driver sends `50` to OpenDTU instead. If Victron requests more than the learned maximum inverter power, the driver sends the learned maximum.
 
 After every absolute limit publish, the driver waits until OpenDTU reports the same value on `status/limit_absolute` before sending another limit to that inverter. This prevents command flooding when ESS changes values faster than OpenDTU can verify them.
 
